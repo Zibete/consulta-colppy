@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "Consulta fiscal · Colppy",
+  "short_name": "Consulta Colppy",
+  "version": "1.1.2",
+  "description": "Consulta masiva de CUIT en Colppy desde la sesión del usuario. Exporta resultados a Excel.",
+  "minimum_chrome_version": "120",
+  "permissions": [
+    "sidePanel",
+    "scripting",
+    "storage",
+    "alarms",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://login.colppy.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "Abrir Consulta fiscal Colppy"
+  }
+}

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Consulta fiscal · Colppy</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand-icon" aria-hidden="true">C</div>
+    <div class="brand-text">
+      <div class="eyebrow">HERRAMIENTAS FINANCE</div>
+      <h1>Consulta fiscal</h1>
+      <div class="subhead">Colppy · ARCA</div>
+    </div>
+    <span class="version">v1.1.2</span>
+  </header>
+
+  <main>
+    <section class="step" aria-labelledby="step-input">
+      <div class="step-heading"><span class="step-number">1</span><h2 id="step-input">Ingresar CUIT</h2></div>
+      <p class="hint">Separá con coma, punto y coma, tabulación, <code>|</code>, espacio o salto de línea.</p>
+      <label class="sr-only" for="cuit-input">Listado de CUIT</label>
+      <textarea id="cuit-input" rows="5" spellcheck="false" placeholder="Pegá los CUIT acá…" aria-describedby="input-count"></textarea>
+      <div class="inline-meta"><span id="input-count">0 CUIT detectados</span><span id="input-warning"></span></div>
+      <button id="start" class="btn btn-primary" type="button">Consultar CUIT</button>
+    </section>
+
+    <section class="step" aria-labelledby="step-progress">
+      <div class="step-heading"><span class="step-number">2</span><h2 id="step-progress">Procesamiento</h2></div>
+      <div class="status-top"><span id="job-status" class="status-pill">Sin iniciar</span><span id="job-progress">0 / 0 únicos</span></div>
+      <progress id="progress" max="100" value="0" aria-label="Progreso de consultas"></progress>
+      <div class="stats">
+        <div class="stat"><span class="stat-label">Correctos</span><strong id="count-ok">0</strong></div>
+        <div class="stat"><span class="stat-label">Sin datos</span><strong id="count-empty">0</strong></div>
+        <div class="stat"><span class="stat-label">Inválidos</span><strong id="count-invalid">0</strong></div>
+        <div class="stat"><span class="stat-label">Errores</span><strong id="count-errors">0</strong></div>
+      </div>
+      <p id="job-note" class="note" role="status" aria-live="polite">Pegá los CUIT y presioná Consultar.</p>
+      <div class="actions">
+        <button id="pause" class="btn btn-secondary" type="button" disabled>Pausar</button>
+        <button id="resume" class="btn btn-secondary" type="button" disabled>Reanudar</button>
+        <button id="discard" class="btn btn-outline" type="button" disabled>Descartar</button>
+      </div>
+    </section>
+
+    <section class="step" aria-labelledby="step-output">
+      <div class="step-heading"><span class="step-number">3</span><h2 id="step-output">Resultados</h2></div>
+      <p class="hint">Se mantienen las 10 columnas, el orden original y los CUIT repetidos.</p>
+      <details id="results-preview" class="results-preview" hidden>
+        <summary>Visualizar resultados <span class="preview-columns">10 columnas</span></summary>
+        <div id="preview-scroll" class="preview-scroll" role="region" aria-label="Resultados de la consulta fiscal" tabindex="0">
+          <table id="preview-table" aria-label="Resultados fiscales: 10 columnas">
+            <tbody id="preview-body"></tbody>
+          </table>
+        </div>
+        <p id="preview-note" class="preview-note" role="status" aria-live="polite"></p>
+      </details>
+      <label class="output-option" for="include-headers"><input id="include-headers" type="checkbox"> Incluir encabezados al copiar a Excel</label>
+      <div class="actions output-actions">
+        <button id="copy" class="btn btn-secondary" type="button" disabled>Copiar Excel</button>
+        <button id="csv" class="btn btn-secondary" type="button" disabled>Exportar CSV</button>
+      </div>
+      <p id="output-note" class="hint">Cuando haya resultados, podrás exportarlos incluso si pausás el proceso.</p>
+    </section>
+  </main>
+  <footer>Solo lectura · Sesión de Colppy · Datos temporales durante la sesión de Chrome</footer>
+  <script type="module" src="panel.js"></script>
+</body>
+</html>
