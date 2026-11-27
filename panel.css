@@ -90,3 +90,18 @@ footer {color:var(--subtle);font-size:10px;line-height:1.5;border-top:1px solid 
 .preview-scroll .preview-loading-cell {color:var(--subtle);}
 .preview-note {margin:6px 10px 8px;color:var(--muted);font-size:10px;}
 .preview-note:empty {display:none;}
+
+/* Selectores de fuente compactos y accesibles. */
+.brand-icon { width:40px;height:40px;flex-shrink:0;background:transparent; }
+.source-fieldset { border:0;padding:0;margin:12px 0;min-width:0; }
+.source-fieldset legend { font-size:12px;font-weight:700;margin-bottom:7px;padding:0; }
+.source-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px; }
+.source-option { display:flex;flex-direction:column;gap:3px;border:1px solid var(--border);background:var(--surface-2);border-radius:7px;padding:8px;cursor:pointer;min-width:0; }
+.source-option:has(input:checked) { border-color:var(--brand-light);background:#302648; }
+.source-option:has(input:disabled) { opacity:.7;cursor:default; }
+.source-option span { display:flex;gap:5px;align-items:center;font-weight:700; }
+.source-option input { accent-color:var(--brand-light);margin:0; }
+.source-option small { font-size:10px;color:var(--muted); }
+.date-option { display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:9px;font-size:12px; }
+.date-option input { border:1px solid var(--border);background:var(--background);border-radius:6px;color:var(--text);padding:6px;font:inherit;min-width:0; }
+.date-option[hidden],#extended-group[hidden] { display:none; }

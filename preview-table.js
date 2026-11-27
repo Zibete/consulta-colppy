@@ -21,26 +21,32 @@ export function previewWindow(scrollTop, total, viewportHeight = PREVIEW_HEADER_
 /** Todos los valores se agregan como textContent, nunca innerHTML. */
 export function createPreviewTable({ disclosure, scroller, table, tbody, note, fetchRows, document: doc }) {
   const colgroup = doc.createElement('colgroup');
-  for (const width of WIDTHS) {
-    const col = doc.createElement('col');
-    col.style.width = `${width}px`;
-    colgroup.append(col);
-  }
   const thead = doc.createElement('thead');
   const heading = doc.createElement('tr');
-  for (const name of COLUMNS) {
-    const th = doc.createElement('th');
-    th.scope = 'col';
-    th.textContent = name;
-    heading.append(th);
-  }
   thead.append(heading);
   table.prepend(colgroup, thead);
+  let columns = COLUMNS;
+  function setColumns(next = COLUMNS) {
+    columns = next;
+    const cols = columns.map(name => {
+      const col = doc.createElement('col');
+      col.style.width = `${WIDTHS[COLUMNS.indexOf(name)] ?? 180}px`;
+      return col;
+    });
+    colgroup.replaceChildren(...cols);
+    const heads = columns.map(name => {
+      const th = doc.createElement('th');
+      th.scope = 'col'; th.textContent = name; return th;
+    });
+    heading.replaceChildren(...heads);
+    table.setAttribute('aria-label', `Resultados: ${columns.length} columnas`);
+  }
+  setColumns();
 
   let state = null;
   let generation = 0;
   let rendered = '';
-  const available = (value) => Boolean(value && ['paused', 'complete'].includes(value.phase) && value.inputCount > 0 && value.next > 0);
+  const available = (value) => Boolean(value && ['paused', 'complete'].includes(value.phase) && value.inputCount > 0 && (value.next > 0 || value.completedQueries > 0));
 
   function spacer(height) {
     if (height <= 0) return null;
@@ -48,7 +54,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     tr.className = 'preview-spacer';
     tr.setAttribute('aria-hidden', 'true');
     const td = doc.createElement('td');
-    td.colSpan = COLUMNS.length;
+    td.colSpan = columns.length;
     td.style.height = `${height}px`;
     tr.append(td);
     return tr;
@@ -61,7 +67,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     for (let index = range.start; index < range.end; index++) {
       const row = rows?.[index - range.start];
       const tr = doc.createElement('tr');
-      for (const field of COLUMNS) {
+      for (const field of columns) {
         const td = doc.createElement('td');
         if (row) {
           const value = safeCell(row[field]);
@@ -83,7 +89,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
   async function refresh(force = false) {
     if (!disclosure.open || !available(state)) return;
     const range = previewWindow(scroller.scrollTop, state.inputCount, scroller.clientHeight);
-    const key = `${state.id}:${state.next}:${range.start}:${range.end}`;
+    const key = `${state.id}:${state.next}:${state.completedQueries ?? 0}:${range.start}:${range.end}`;
     if (!force && key === rendered) return;
     rendered = key;
     const token = ++generation;
@@ -96,7 +102,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
       if (token !== generation || !disclosure.open || state?.id !== id || !available(state)) return;
       // No representar filas de una consulta reemplazada mientras se recuperaban datos.
       if (state.next !== nextAtRequest) return;
-      if (response.total !== state.inputCount || response.rows.length !== range.end - range.start) {
+      if ((response.jobId != null && response.jobId !== id) || response.total !== state.inputCount || response.rows.length !== range.end - range.start) {
         throw new Error('La cantidad de filas cambió durante la lectura.');
       }
       paint(range, response.rows);
@@ -121,7 +127,9 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
   scroller.addEventListener('scroll', () => { if (disclosure.open) void refresh(); });
 
   return {
-    update(next) {
+    update(next, nextColumns = COLUMNS) {
+      const changedColumns = nextColumns.join("|") !== columns.join("|");
+      if (changedColumns) { setColumns(nextColumns); generation++; rendered = ""; }
       const prev = state;
       state = next;
       const canShow = available(next);
@@ -134,7 +142,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
         scroller.scrollTop = 0;
         scroller.scrollLeft = 0;
         note.textContent = '';
-      } else if (disclosure.open && (prev?.next !== next?.next || prev?.phase !== next?.phase)) {
+      } else if (disclosure.open && (changedColumns || prev?.next !== next?.next || prev?.completedQueries !== next?.completedQueries || prev?.phase !== next?.phase)) {
         void refresh(true);
       }
     }

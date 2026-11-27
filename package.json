@@ -1,10 +1,10 @@
 {
-  "name": "consulta-fiscal-colppy",
-  "version": "1.1.2",
+  "name": "consulta-colppy",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check background.js && node --check page-query.js && node --check panel.js && node --check preview-table.js && node --check core.js"
+    "check": "node --check background.js && node --check page-query.js && node --check panel.js && node --check preview-table.js && node --check core.js && node --check sources.js && node --check tax-catalog.js"
   }
 }

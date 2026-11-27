@@ -1,4 +1,5 @@
 import { parseCuits, isValidCuit, MAX_CUITS, toTsv, toCsv } from './core.js';
+import { SOURCES, argentinaDate, validDate, columnsFor } from './sources.js';
 import { createPreviewTable } from './preview-table.js';
 
 const $ = (id) => document.getElementById(id);
@@ -12,6 +13,27 @@ const elements = {
 };
 let job = null;
 let busy = false;
+const sourceInputs = Object.fromEntries(SOURCES.map(s => [s, $(`source-${s.toLowerCase()}`)]));
+const dateInput = $('arba-date');
+const extended = $('extended');
+const selectedSources = () => SOURCES.filter(s => sourceInputs[s].checked);
+const outputColumns = () => columnsFor(job?.sources ?? selectedSources(), extended.checked);
+function refreshChoices() {
+  const sources = selectedSources();
+  dateInput.max = argentinaDate();
+  if (!dateInput.value) dateInput.value = dateInput.max;
+  $('arba-date-group').hidden = !sources.includes('ARBA');
+  const locked = busy || ['running','waiting_login','paused'].includes(job?.phase);
+  for (const input of Object.values(sourceInputs)) input.disabled = locked;
+  dateInput.disabled = locked;
+  const hasArca = (job?.sources ?? sources).includes('ARCA');
+  $('extended-group').hidden = !hasArca;
+  extended.disabled = !hasArca || busy;
+  const columns = outputColumns();
+  $('columns-hint').textContent = `${columns.length} columnas · Se conserva el orden original y los CUIT repetidos.`;
+  $('preview-columns').textContent = `${columns.length} columnas`;
+  preview.update(job, columns);
+}
 const preview = createPreviewTable({
   disclosure: $('results-preview'), scroller: $('preview-scroll'),
   table: $('preview-table'), tbody: $('preview-body'), note: $('preview-note'),
@@ -33,25 +55,30 @@ function refreshInputCount() {
   elements.inputCount.textContent = `${tokens.length.toLocaleString('es-AR')} CUIT · ${unique.toLocaleString('es-AR')} únicos`;
   elements.inputWarning.textContent = tokens.length > MAX_CUITS ? 'Supera el máximo' :
     invalid ? `${invalid} inválidos` : '';
-  elements.start.disabled = busy || ['running', 'waiting_login'].includes(job?.phase) || !tokens.length || tokens.length > MAX_CUITS;
+  elements.start.disabled = busy || ['running', 'waiting_login', 'paused'].includes(job?.phase) || !tokens.length || tokens.length > MAX_CUITS || !selectedSources().length || (sourceInputs.ARBA.checked && !validDate(dateInput.value));
 }
 function render(next) {
+  const previous = job;
   job = next;
-  preview.update(next);
+  if (next && previous?.id !== next.id) {
+    for (const s of SOURCES) sourceInputs[s].checked = (next.sources ?? ['ARCA']).includes(s);
+    if (next.arbaDate) dateInput.value = next.arbaDate;
+  }
+  refreshChoices();
   const phase = next?.phase || 'idle';
   const names = { idle: 'Sin iniciar', waiting_login: 'Abriendo Colppy', running: 'Consultando', paused: 'Pausado', complete: 'Finalizado' };
-  elements.status.textContent = names[phase] || 'Sin iniciar';
+  elements.status.textContent = next?.pauseRequested ? 'Pausando' : names[phase] || 'Sin iniciar';
   elements.status.className = `status-pill ${phase}`;
   elements.progressLabel.textContent = next ?
-    `${next.next.toLocaleString('es-AR')} / ${next.uniqueCount.toLocaleString('es-AR')} únicos` : '0 / 0 únicos';
+    `${next.next.toLocaleString('es-AR')} / ${next.uniqueCount.toLocaleString('es-AR')} únicos${phase === 'running' && next.sources?.length > 1 ? ` · ${next.sources[next.sourceIndex ?? 0]}` : ''}` : '0 / 0 únicos';
   elements.progress.value = next?.uniqueCount ? (next.next * 100 / next.uniqueCount) : 0;
   elements.ok.textContent = next?.stats?.ok ?? 0;
   elements.empty.textContent = next?.stats?.noData ?? 0;
   elements.invalid.textContent = next?.stats?.invalid ?? 0;
   elements.errors.textContent = next?.stats?.errors ?? 0;
   elements.note.textContent = next?.note || 'Pegá los CUIT y presioná Consultar.';
-  const outputReady = !!next && (phase === 'paused' || phase === 'complete') && next.next > 0;
-  elements.pause.disabled = busy || !['running', 'waiting_login'].includes(phase);
+  const outputReady = !!next && (phase === 'paused' || phase === 'complete') && (next.next > 0 || next.completedQueries > 0);
+  elements.pause.disabled = busy || next?.pauseRequested || !['running', 'waiting_login'].includes(phase);
   elements.resume.disabled = busy || phase !== 'paused';
   elements.discard.disabled = busy || phase === 'idle';
   elements.copy.disabled = busy || !outputReady;
@@ -88,8 +115,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 elements.input.addEventListener('input', refreshInputCount);
+for (const input of Object.values(sourceInputs)) input.addEventListener('change', () => { refreshChoices(); refreshInputCount(); });
+dateInput.addEventListener('change', refreshInputCount);
+extended.addEventListener('change', refreshChoices);
 elements.start.addEventListener('click', () => withBusy(async () => {
-  render(await command('START', { input: elements.input.value }));
+  render(await command('START', { input: elements.input.value, sources: selectedSources(), arbaDate: dateInput.value }));
 }));
 elements.pause.addEventListener('click', () => withBusy(async () => {
   render(await command('PAUSE'));
@@ -121,16 +151,16 @@ async function collectRows() {
 elements.copy.addEventListener('click', () => withBusy(async () => {
   const rows = await collectRows();
   const includeHeaders = elements.headers.checked;
-  await navigator.clipboard.writeText(toTsv(rows, includeHeaders));
+  await navigator.clipboard.writeText(toTsv(rows, includeHeaders, outputColumns()));
   return `Copiadas ${rows.length.toLocaleString('es-AR')} filas (${includeHeaders ? 'con' : 'sin'} encabezados). Pegá en Excel.`;
 }));
 elements.csv.addEventListener('click', () => withBusy(async () => {
   const rows = await collectRows();
-  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' });
+  const blob = new Blob([toCsv(rows, outputColumns())], { type: 'text/csv;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `consulta-fiscal-colppy-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `consulta-colppy-${new Date().toISOString().slice(0, 10)}.csv`;
   document.body.append(a);
   a.click();
   a.remove();

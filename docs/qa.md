@@ -1,0 +1,11 @@
+# QA independiente — Consulta Colppy
+
+Objetivo: verificar la v2.0 en Chrome con DevTools MCP, sin modificar código ni registros. Usar sesión y CUIT autorizados; confirmar derecho de uso de cada operación (incluido plan ARBA/AGIP) antes de invocarla. No realizar pruebas masivas ni exponer credenciales, cookies, cuerpos de solicitudes, HAR ni domicilios reales. Si no se puede sanear una captura, no extraerla.
+
+1. Recargar la extensión descomprimida. Verificar branding, tres pasos, ARCA marcado por defecto, ARBA/AGIP opcionales y fecha ARBA visible solo al seleccionarla. No hay selección de fechas futuras.
+2. ARCA estándar: un CUIT autorizado y duplicado, un inválido. Una solicitud por CUIT válido único, diez columnas, mismas filas/orden, TSV sin encabezados por defecto, CSV con encabezados. Activar información adicional y verificar 16 columnas sin nuevas solicitudes.
+3. Si las fuentes provinciales están autorizadas, hacer un lote mínimo con las tres. Verificar que las operaciones sean las tres de la lista cerrada y los campos de alícuota y estado independientes; no confundir cero y ausencia. Las 25 columnas ampliadas deben corresponder al encabezado. Confirmar que la fecha ARBA solicitada aparece en resultado y que coincide con lo enviado. La coincidencia con otras fuentes no demuestra vigencia ni tiempo real.
+4. Pausar durante una consulta si es reproducible con lote mínimo autorizado: se conserva lo concluido y se muestran los pendientes; reanudar no repite pares confirmados. Cerrar/reabrir panel y comprobar el estado. No forzar errores ni alterar la sesión de una operación en curso sin autorización.
+5. Verificar preview cerrada por defecto, máximo cinco filas visibles, scroll horizontal/vertical, encabezados dinámicos; abrir o cambiar información adicional no genera solicitudes Colppy. Repetir exportación parcial y completa. Confirmar que no se modifican registros ni permisos.
+
+Entregable: matriz de casos APROBADO/FALLÓ/NO EJECUTADO con evidencia saneada, desvíos, motivos y recomendaciones; no modificar código. No presentar una prueba no ejecutada como aprobada.

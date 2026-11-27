@@ -130,8 +130,8 @@ test('V-09: estructura, sticky header, scroll doble, límite cinco filas y sin a
   assert.match(css, /\.preview-scroll\s*\{[^}]*max-height:204px;[^}]*overflow:auto;/);
   assert.match(css, /\.preview-scroll th\s*\{[^}]*position:sticky;top:0;/);
   assert.match(js, /const includeHeaders = elements\.headers\.checked;/);
-  assert.match(js, /toTsv\(rows, includeHeaders\)/);
-  assert.match(js, /toCsv\(rows\)/);
+  assert.match(js, /toTsv\(rows, includeHeaders, outputColumns\(\)\)/);
+  assert.match(js, /toCsv\(rows, outputColumns\(\)\)/);
 });
 test('V-10: colapsar no conserva filas visibles ni realiza consultas adicionales', async () => {
   const f = fixture(async (start, limit) => ({ rows: dataRows(start, limit), total: 10 }));
@@ -146,4 +146,13 @@ test('V-10: colapsar no conserva filas visibles ni realiza consultas adicionales
   f.scroller.fire('scroll');
   await tick();
   assert.equal(f.calls.length, initial);
+});
+
+
+test('V-11: la tabla cambia encabezados y celdas según columnas seleccionadas sin pedir datos fiscales', async () => {
+  const f=fixture(); const columns=['CUIT','AGIP Retención (%)','AGIP Estado'];
+  f.preview.update(status(),columns); f.disclosure.open=true;f.disclosure.fire('toggle');await tick();
+  const head=f.table.children.find(x=>x.tagName==='thead');assert.deepEqual(head.children[0].children.map(x=>x.textContent),columns);
+  assert.equal(f.tbody.children.filter(x=>x.className!=='preview-spacer')[0].children.length,3);
+  f.preview.update(status(),COLUMNS);await tick();assert.equal(head.children[0].children.length,10);
 });
