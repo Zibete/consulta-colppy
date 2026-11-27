@@ -153,3 +153,25 @@ test('Q-11: no automatiza login fuera del origen autorizado', () => {
     assert.equal(fake.clicks, 0);
   } finally { fake.restore(); }
 });
+
+
+test('Q-12: ARBA y AGIP usan solo las operaciones permitidas y parámetros nativos', async () => {
+  const requests=[];const restore=installMock(options=>{requests.push(options.params);const rates={retencion:'0',percepcion:'0.80',secreto:'NO_EXFILTRAR'};options.success({responseText:JSON.stringify({result:{estado:0},response:{success:true,data:options.params.operation==='consultaPadronIIBB'?rates:[rates]}})});});
+  try {
+    const a=await pageQueryCuit('20123456780','ARBA','2020-01-15');const g=await pageQueryCuit('20123456780','AGIP');
+    assert.equal(requests[0].operation,'consultaPadronIIBB');assert.equal(requests[0].data.idProvincia,'2');assert.equal(requests[0].data.fecha,'2020-01-15');
+    assert.equal(requests[1].operation,'consultaAlicuotaAgip');assert.equal(requests[1].data.fecha,undefined);
+    for(const r of requests){assert.equal(r.service,'Retencion');assert.equal(r.data.idEmpresa,undefined);assert.equal(r.data.sesion.userId,undefined);}
+    assert.equal(a.data.response.data.retencion,'0');assert.equal(g.data.response.data[0].retencion,'0');
+    assert.equal(JSON.stringify([a,g]).includes('NO_EXFILTRAR'),false);assert.equal(JSON.stringify([a,g]).includes('TEST_SESSION_ONLY'),false);
+    assert.equal((await pageQueryCuit('20123456780','FCE')).kind,'error');assert.equal(requests.length,2);
+  } finally {restore();}
+});
+test('Q-13: ARBA reconoce respuesta de padrón no disponible sin retornar cuerpo', async () => {
+  const restore=installMock(o=>o.success({responseText:'Unable to open file!'}));
+  try {assert.deepEqual(await pageQueryCuit('20123456780','ARBA','2020-01-15'),{kind:'padron'});}finally{restore();}
+});
+test('Q-14: filtro ARCA permite campos extendidos pero excluye DNI y mensajes con sesión', async () => {
+  const restore=installMock(o=>o.success({responseText:JSON.stringify({result:{estado:0},response:{success:true,message:'TEST_SESSION_ONLY',data:{nombre:'Empresa ficticia',tipoPersona:'JURIDICA',impuestos:[30,11],numeroDocumento:'NO_EXFILTRAR',descActividad:'Actividad ficticia'}}})}));
+  try{const a=await pageQueryCuit('20123456780');assert.deepEqual(a.data.response.data.impuestos,[30,11]);assert.equal(a.data.response.data.tipoPersona,'JURIDICA');assert.equal(JSON.stringify(a).includes('NO_EXFILTRAR'),false);assert.equal(JSON.stringify(a).includes('TEST_SESSION_ONLY'),false);}finally{restore();}
+});
