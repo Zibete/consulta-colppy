@@ -1,7 +1,7 @@
 import {
-  parseCuits, isValidCuit, MAX_CUITS, INTERVAL_MS,
-  emptyRow, normalizeColppyResponse
+  parseCuits, isValidCuit, MAX_CUITS, INTERVAL_MS
 } from './core.js';
+import { selection, normalizeSource, aggregate, projectRow } from './sources.js';
 import { pagePreflight, pageQueryCuit, pageAssistLogin, pageCancelLoginAssist } from './page-query.js';
 
 const STATE_KEY = 'colppy:state';
@@ -11,6 +11,13 @@ const WATCHDOG = 'colppy:watchdog';
 const LOGIN_URL = 'https://login.colppy.com/';
 let runningInWorker = false;
 let checkingAuth = false;
+let requestInProgress = false;
+let checkpointLock = Promise.resolve();
+function serialized(fn) {
+  const next = checkpointLock.then(fn, fn);
+  checkpointLock = next.catch(() => {});
+  return next;
+}
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
@@ -40,7 +47,8 @@ function resultKey(jobId, position) {
 async function setState(state) {
   await chrome.storage.session.set({ [STATE_KEY]: state });
 }
-async function clearJob() {
+async function clearJob() { return serialized(clearJobUnlocked); }
+async function clearJobUnlocked() {
   const previous = await getState();
   if (previous?.phase === 'waiting_login' && previous.tabId != null) {
     await inject(previous.tabId, pageCancelLoginAssist).catch(() => {});
@@ -112,18 +120,20 @@ async function checkPendingLogin(changedTabId = null, navigationComplete = false
       await setState(current);
     }
     const checked = await inject(current.tabId, pagePreflight).catch(() => null);
-    const latest = await getState();
-    if (latest?.id !== current.id || latest.phase !== 'waiting_login') return latest;
-    if (checked?.ready) {
-      const running = { ...latest, phase: 'running', tabId: current.tabId,
-        updatedAt: Date.now(), note: 'Sesión disponible. Consultando CUIT.' };
-      await setState(running);
-      void runQueue();
-      return running;
-    }
-    // El asistente opera dentro de Colppy. No recibe valores ni credenciales.
-    await inject(current.tabId, pageAssistLogin).catch(() => {});
-    return getState();
+    return await serialized(async () => {
+      const latest = await getState();
+      if (latest?.id !== current.id || latest.phase !== 'waiting_login') return latest;
+      if (checked?.ready) {
+        const running = { ...latest, phase: 'running', tabId: current.tabId,
+          updatedAt: Date.now(), note: 'Sesión disponible. Consultando CUIT.' };
+        await setState(running);
+        void runQueue();
+        return running;
+      }
+      // El asistente opera dentro de Colppy. No recibe valores ni credenciales.
+      await inject(current.tabId, pageAssistLogin).catch(() => {});
+      return getState();
+    });
   } finally {
     checkingAuth = false;
   }
@@ -131,20 +141,21 @@ async function checkPendingLogin(changedTabId = null, navigationComplete = false
 
 async function startJob(message) {
   const active = await getState();
-  if (['running', 'waiting_login'].includes(active?.phase)) {
-    throw new Error('Ya hay una consulta en curso o esperando autenticación.');
+  if (['running', 'waiting_login', 'paused'].includes(active?.phase)) {
+    throw new Error('Ya hay una consulta activa. Reanudala o descartala antes de iniciar otra.');
   }
   const items = parseCuits(message?.input || '');
   if (!items.length) throw new Error('Ingresá al menos un CUIT.');
   if (items.length > MAX_CUITS) throw new Error(`Máximo permitido: ${MAX_CUITS} CUIT por lote.`);
+  const options = selection(message);
   const unique = [...new Set(items)];
   await clearJob();
   const jobId = crypto.randomUUID();
   const now = Date.now();
   const state = {
     id: jobId, tabId: null, phase: 'waiting_login', startedAt: now, updatedAt: now,
-    inputCount: items.length, uniqueCount: unique.length, next: 0,
-    stats: { ok: 0, noData: 0, invalid: 0, errors: 0, fixedFields: 0 },
+    inputCount: items.length, uniqueCount: unique.length, next: 0, sourceIndex: 0, completedQueries: 0, ...options,
+    stats: { ok: 0, partial: 0, noData: 0, invalid: 0, errors: 0, fixedFields: 0 },
     consecutiveErrors: 0, authPrompts: 0,
     note: 'Abriendo Colppy. Si es necesario, iniciá sesión; la consulta continuará automáticamente.'
   };
@@ -167,41 +178,43 @@ async function startJob(message) {
 }
 
 async function requestLogin(state) {
-  const current = await getState();
-  if (!current || current.id !== state.id || current.phase !== 'running') return;
-  if ((current.authPrompts || 0) >= 1) {
-    await pauseWithNote(current, 'Colppy volvió a rechazar la sesión. Verificá el acceso y reanudá manualmente.');
-    return;
-  }
-  const waiting = { ...current, phase: 'waiting_login', authPrompts: 1, awaitingNavigation: true,
-    updatedAt: Date.now(), note: 'La sesión venció. Se abrirá Colppy para iniciar sesión y continuar sin repetir los CUIT completados.' };
-  await setState(waiting);
-  try {
-    // Navegar a login solo después de un error de sesión real; no por un preflight ambiguo.
-    // Un login por sesión vencida tampoco roba el foco.
-    await chrome.tabs.update(current.tabId, { url: LOGIN_URL });
-    await chrome.alarms.create(WATCHDOG, { periodInMinutes: 1 });
-  } catch {
-    await setState({ ...waiting, phase: 'paused', updatedAt: Date.now(),
-      note: 'No se pudo abrir el inicio de sesión. Presioná Reanudar.' });
-    await chrome.alarms.clear(WATCHDOG);
-  }
-}
-
-function rowFromError(cuit, kind, message) {
-  const row = emptyRow(cuit);
-  row.Estado = kind;
-  row.Error = message;
-  return row;
+  await serialized(async () => {
+    const current = await getState();
+    if (!current || current.id !== state.id || current.phase !== 'running') return;
+    if (current.pauseRequested || (current.authPrompts || 0) >= 1) {
+      await setState({ ...current, phase: 'paused', pauseRequested: false, updatedAt: Date.now(),
+        note: current.pauseRequested ? 'Pausado. La sesión deberá renovarse al reanudar.' : 'Colppy volvió a rechazar la sesión. Verificá el acceso y reanudá manualmente.' });
+      await chrome.alarms.clear(WATCHDOG);
+      return;
+    }
+    const waiting = { ...current, phase: 'waiting_login', authPrompts: 1, awaitingNavigation: true,
+      updatedAt: Date.now(), note: 'La sesión venció. Iniciá sesión en Colppy para continuar sin repetir las consultas completadas.' };
+    await setState(waiting);
+    try {
+      await chrome.tabs.update(current.tabId, { url: LOGIN_URL });
+      await chrome.alarms.create(WATCHDOG, { periodInMinutes: 1 });
+    } catch {
+      await setState({ ...waiting, phase: 'paused', updatedAt: Date.now(),
+        note: 'No se pudo abrir el inicio de sesión. Presioná Reanudar.' });
+      await chrome.alarms.clear(WATCHDOG);
+    }
+  });
 }
 
 async function pauseWithNote(state, note) {
-  const current = await getState();
-  if (!current || current.id !== state.id || current.phase !== 'running') return;
-  await setState({ ...current, phase: 'paused', updatedAt: Date.now(), note });
-  await chrome.alarms.clear(WATCHDOG);
+  await serialized(async () => {
+    const current = await getState();
+    if (!current || current.id !== state.id || current.phase !== 'running') return;
+    await setState({ ...current, phase: 'paused', pauseRequested: false, updatedAt: Date.now(), note });
+    await chrome.alarms.clear(WATCHDOG);
+  });
 }
-
+function sessionRejected(response) {
+  if (!response || response.kind === 'session') return true;
+  const details = [response.data?.result?.mensaje, response.data?.response?.message, response.data?.response?.mensaje]
+    .filter(Boolean).join(' ').toLocaleLowerCase('es-AR');
+  return /(?:sesi[oó]n|autenticaci[oó]n)/u.test(details) && /(?:expir|venc|caduc|inv[aá]lid|autoriz|inici|cerrad)/u.test(details);
+}
 async function runQueue() {
   if (runningInWorker) return;
   runningInWorker = true;
@@ -211,87 +224,93 @@ async function runQueue() {
     while (true) {
       const state = await getState();
       if (!state || state.phase !== 'running') return;
-      if (state.next >= input.unique.length) {
-        await setState({ ...state, phase: 'complete', updatedAt: Date.now(), note: 'Consulta finalizada.' });
-        await chrome.alarms.clear(WATCHDOG);
+      if (state.pauseRequested) {
+        await pauseWithNote(state, 'Pausado. Podés copiar los resultados parciales o reanudar.');
         return;
       }
+      if (state.next >= input.unique.length) {
+        await serialized(async () => {
+          const current = await getState();
+          if (current?.id !== state.id || current.phase !== 'running') return;
+          await setState({ ...current, phase: 'complete', updatedAt: Date.now(), note: 'Consulta finalizada.' });
+          await chrome.alarms.clear(WATCHDOG);
+        });
+        return;
+      }
+      const index = state.next, sourceIndex = state.sourceIndex ?? 0;
+      const cuit = input.unique[index], sources = state.sources ?? ['ARCA'], source = sources[sourceIndex];
+      const key = resultKey(state.id, index);
       if (!(await verifyTab(state.tabId))) {
         await pauseWithNote(state, 'La pestaña de Colppy se cerró, se descargó o cambió de dirección. Presioná Reanudar.');
         return;
       }
-      const index = state.next;
-      const cuit = input.unique[index];
-      let row;
-      let fixedFields = 0;
-      if (!isValidCuit(cuit)) {
-        row = rowFromError(cuit, 'CUIT inválido', 'Debe tener 11 dígitos y dígito verificador válido.');
-      } else {
-        let response;
-        try {
-          response = await inject(state.tabId, pageQueryCuit, [cuit]);
-        } catch {
-          await pauseWithNote(state, 'No se pudo conectar con la pestaña Colppy. Revisá la sesión y reanudá.');
-          return;
-        }
-        if (!response || response.kind === 'session') {
-          await requestLogin(state);
-          return;
-        }
-        if (response.kind === 'http' && [429, 503].includes(response.status)) {
-          await pauseWithNote(state, `Colppy respondió ${response.message}. Se pausó para evitar nuevas solicitudes.`);
-          return;
-        }
-        if (response.kind === 'response') {
-          const details = [response.data?.result?.mensaje, response.data?.response?.message,
-            response.data?.response?.mensaje].filter(Boolean).join(' ').toLocaleLowerCase('es-AR');
-          if (/(?:sesi[oó]n|autenticaci[oó]n)/u.test(details) &&
-              /(?:expir|venc|caduc|inv[aá]lid|autoriz|inici|cerrad)/u.test(details)) {
+      // Reservar el par bajo el mismo bloqueo que PAUSE evita perder una respuesta
+      // si la pausa llega entre la validación del estado y el envío.
+      const reserved = await serialized(async () => {
+        const ready = await getState();
+        if (ready?.id !== state.id || ready.phase !== 'running' || ready.pauseRequested || ready.next !== index || (ready.sourceIndex ?? 0) !== sourceIndex) return false;
+        requestInProgress = true;
+        return true;
+      });
+      if (!reserved) return;
+      let result;
+      const invalid = !isValidCuit(cuit);
+      try {
+        if (!invalid) {
+          let response;
+          try { response = await inject(state.tabId, pageQueryCuit, [cuit, source, state.arbaDate]); }
+          catch { await pauseWithNote(state, 'No se pudo conectar con la pestaña Colppy. Revisá la sesión y reanudá.'); return; }
+          if (sessionRejected(response)) {
             await requestLogin(state);
             return;
           }
-          const normalized = normalizeColppyResponse(cuit, response.data);
-          row = normalized.row;
-          fixedFields = normalized.repaired;
-        } else if (response.kind === 'http') {
-          row = rowFromError(cuit, 'Error HTTP', response.message);
-        } else {
-          row = rowFromError(cuit, 'Error', response?.message || 'Respuesta no reconocida de Colppy.');
+          if (response.kind === 'http' && [429, 503].includes(response.status)) {
+            await pauseWithNote(state, `Colppy respondió ${response.message}. Se pausó para evitar nuevas solicitudes.`);
+            return;
+          }
+          result = normalizeSource(source, cuit, response);
         }
-      }
-      // Una pausa o descarte durante la petición nunca se sobreescribe al retornar.
-      const latest = await getState();
-      if (!latest || latest.id !== state.id || latest.phase !== 'running' || latest.next !== index) return;
-      const stats = { ...latest.stats };
-      if (row.Estado === 'OK') stats.ok += 1;
-      else if (row.Estado === 'Sin datos') stats.noData += 1;
-      else if (row.Estado === 'CUIT inválido') stats.invalid += 1;
-      else stats.errors += 1;
-      stats.fixedFields += fixedFields;
-      const consecutiveErrors = ['Error HTTP', 'Error'].includes(row.Estado) ?
-        (latest.consecutiveErrors || 0) + 1 : 0;
-      const advanced = { ...latest, next: index + 1, updatedAt: Date.now(), stats, consecutiveErrors };
-      // Checkpoint atómico: resultado + cursor; evita perder filas ya procesadas.
-      await chrome.storage.session.set({
-        [resultKey(state.id, index)]: row,
-        [STATE_KEY]: advanced
-      });
-      if (consecutiveErrors >= 5) {
-        await pauseWithNote(advanced, 'Cinco consultas seguidas fallaron. Se pausó para revisar Colppy antes de continuar.');
-        return;
-      }
-      if (index + 1 < input.unique.length) {
-        await new Promise((resolve) => setTimeout(resolve, INTERVAL_MS));
+        const advanced = await serialized(async () => {
+          const latest = await getState();
+          if (!latest || latest.id !== state.id || latest.phase !== 'running' || latest.next !== index || (latest.sourceIndex ?? 0) !== sourceIndex) return null;
+          const previous = (await chrome.storage.session.get(key))[key];
+          const record = invalid ? { invalid: true } : { results: { ...previous?.results, [source]: result } };
+          const done = invalid || sourceIndex + 1 === sources.length;
+          const stats = { ...latest.stats };
+          if (done) {
+            const status = aggregate(record, sources);
+            if (status === 'OK') stats.ok++;
+            else if (status === 'Parcial') stats.partial = (stats.partial ?? 0) + 1;
+            else if (status === 'Sin datos') stats.noData++;
+            else if (status === 'CUIT inválido') stats.invalid++;
+            else stats.errors++;
+          }
+          stats.fixedFields += result?.repaired ?? 0;
+          const consecutiveErrors = result && !['OK', 'Sin datos', 'Parcial'].includes(result.status) ? (latest.consecutiveErrors || 0) + 1 : 0;
+          const paused = latest.pauseRequested || consecutiveErrors >= 5;
+          const next = { ...latest, next: done ? index + 1 : index, sourceIndex: done ? 0 : sourceIndex + 1,
+            completedQueries: (latest.completedQueries ?? 0) + (invalid ? 0 : 1), updatedAt: Date.now(), stats, consecutiveErrors,
+            phase: paused ? 'paused' : 'running', pauseRequested: false,
+            note: paused ? (consecutiveErrors >= 5 ? 'Cinco consultas seguidas fallaron. Se pausó para revisar Colppy.' : 'Pausado. Podés copiar los resultados parciales o reanudar.') : `Consultando ${done ? sources[0] : sources[sourceIndex + 1]}.` };
+          // Checkpoint atómico por par: no se escribe el cursor sin confirmar el resultado.
+          await chrome.storage.session.set({ [key]: record, [STATE_KEY]: next });
+          if (paused) await chrome.alarms.clear(WATCHDOG);
+          return next;
+        });
+        if (!advanced || advanced.phase !== 'running') return;
+      } finally { requestInProgress = false; }
+      if (!invalid && (index + 1 < input.unique.length || sourceIndex + 1 < sources.length)) {
+        await new Promise(resolve => setTimeout(resolve, INTERVAL_MS));
       }
     }
   } catch {
     const state = await getState();
     if (state?.phase === 'running') {
-      await pauseWithNote(state, 'Error interno de procesamiento. Los resultados anteriores permanecen disponibles.');
+      await pauseWithNote(state, 'No se pudo guardar el checkpoint o hubo un error interno. Conservá/exportá los resultados anteriores; si falta espacio, dividí el lote.');
     }
   } finally {
+    requestInProgress = false;
     runningInWorker = false;
-    // Si el login se completó mientras terminaba una petición anterior, reintenta la cola.
     void resumeIfNeeded();
   }
 }
@@ -302,20 +321,27 @@ async function resumeIfNeeded() {
   if (state?.phase === 'waiting_login') void checkPendingLogin();
 }
 async function pauseJob() {
-  const state = await getState();
-  if (!['running', 'waiting_login'].includes(state?.phase)) return state;
-  if (state.phase === 'waiting_login' && state.tabId != null) {
-    await inject(state.tabId, pageCancelLoginAssist).catch(() => {});
-  }
-  const next = { ...state, phase: 'paused', updatedAt: Date.now(), note: 'Pausado. Podés copiar los resultados parciales o reanudar.' };
-  await setState(next);
-  await chrome.alarms.clear(WATCHDOG);
-  return next;
+  return serialized(async () => {
+    const state = await getState();
+    if (!['running', 'waiting_login'].includes(state?.phase)) return state;
+    if (state.phase === 'running' && requestInProgress) {
+      const requested = { ...state, pauseRequested: true, updatedAt: Date.now(), note: 'Pausando al finalizar la consulta en curso…' };
+      await setState(requested);
+      return requested;
+    }
+    if (state.phase === 'waiting_login' && state.tabId != null) {
+      await inject(state.tabId, pageCancelLoginAssist).catch(() => {});
+    }
+    const next = { ...state, phase: 'paused', pauseRequested: false, updatedAt: Date.now(), note: 'Pausado. Podés copiar los resultados parciales o reanudar.' };
+    await setState(next);
+    await chrome.alarms.clear(WATCHDOG);
+    return next;
+  });
 }
 async function resumeJob() {
   const state = await getState();
   if (!state || state.phase !== 'paused') throw new Error('No hay una consulta pausada.');
-  const waiting = { ...state, phase: 'waiting_login', authPrompts: 0,
+  const waiting = { ...state, phase: 'waiting_login', pauseRequested: false, authPrompts: 0,
     updatedAt: Date.now(), note: 'Comprobando sesión de Colppy para continuar.' };
   await setState(waiting);
   try {
@@ -347,9 +373,10 @@ async function fetchRows(start, limit) {
   const found = await chrome.storage.session.get(keys);
   const rows = slice.map((cuit) => {
     const data = found[resultKey(state.id, indexByCuit.get(cuit))];
-    return data || rowFromError(cuit, 'Pendiente', 'No procesado todavía.');
+    return projectRow(cuit, data, state);
   });
-  return { rows, total: input.items.length };
+  if ((await getState())?.id !== state.id) throw new Error('Cambió la consulta durante la lectura.');
+  return { rows, total: input.items.length, jobId: state.id };
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

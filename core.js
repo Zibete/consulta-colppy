@@ -104,15 +104,15 @@ export function safeCell(value) {
   return /^[\x00-\x20]*[=+\-@]/u.test(text) ? `'${text}` : text;
 }
 
-export function toTsv(rows, includeHeaders = false) {
-  const data = rows.map((row) => COLUMNS.map((c) => safeCell(row[c])).join('\t'));
-  return (includeHeaders ? [COLUMNS.join('\t'), ...data] : data).join('\r\n');
+export function toTsv(rows, includeHeaders = false, columns = COLUMNS) {
+  const data = rows.map((row) => columns.map((c) => safeCell(row[c])).join('\t'));
+  return (includeHeaders ? [columns.join('\t'), ...data] : data).join('\r\n');
 }
 
 function csvCell(value) {
   const text = safeCell(value);
   return /[;"\r\n]/u.test(text) ? `"${text.replace(/"/gu, '""')}"` : text;
 }
-export function toCsv(rows) {
-  return '\uFEFF' + [COLUMNS.join(';'), ...rows.map((row) => COLUMNS.map((c) => csvCell(row[c])).join(';'))].join('\r\n');
+export function toCsv(rows, columns = COLUMNS) {
+  return '\uFEFF' + [columns.join(';'), ...rows.map((row) => columns.map((c) => csvCell(row[c])).join(';'))].join('\r\n');
 }

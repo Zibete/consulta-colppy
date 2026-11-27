@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Consulta fiscal · Colppy",
+  "name": "Consulta Colppy",
   "short_name": "Consulta Colppy",
-  "version": "1.1.2",
-  "description": "Consulta masiva de CUIT en Colppy desde la sesión del usuario. Exporta resultados a Excel.",
+  "version": "2.0.0",
+  "description": "Consulta masiva de CUIT, datos y alícuotas mediante la sesión de Colppy.",
   "minimum_chrome_version": "120",
   "permissions": [
     "sidePanel",
@@ -23,6 +23,18 @@
     "default_path": "panel.html"
   },
   "action": {
-    "default_title": "Abrir Consulta fiscal Colppy"
+    "default_title": "Abrir Consulta Colppy",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
   }
 }

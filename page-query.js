@@ -89,12 +89,16 @@ export function pagePreflight() {
   };
 }
 
-export function pageQueryCuit(cuit) {
+export function pageQueryCuit(cuit, source = 'ARCA', arbaDate = null) {
   return new Promise((resolve) => {
     const g = globalThis;
     // El service worker solo aporta el CUIT; todo lo sensible permanece en el contexto Colppy.
     if (typeof cuit !== 'string' || !/^\d{11}$/.test(cuit)) {
       resolve({ kind: 'invalid', message: 'CUIT inválido' });
+      return;
+    }
+    if (!['ARCA', 'ARBA', 'AGIP'].includes(source) || (source === 'ARBA' && (typeof arbaDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(arbaDate)))) {
+      resolve({ kind: 'error', message: 'Consulta no autorizada o fecha inválida.' });
       return;
     }
     const ext = typeof Ext !== 'undefined' ? Ext : g.Ext;
@@ -123,31 +127,52 @@ export function pageQueryCuit(cuit) {
         url: endpoint.href,
         method: 'POST',
         timeout: 20000,
-        params: buildBody('Tercero', 'obtener_datos_tercero_de_afip', {
-          sesion: { usuario: user, userId: sessionUserId, claveSesion: sessionPassword },
-          cuit, idEmpresa: company
+        params: source === 'ARCA' ? buildBody('Tercero', 'obtener_datos_tercero_de_afip', {
+          sesion: { usuario: user, userId: sessionUserId, claveSesion: sessionPassword }, cuit, idEmpresa: company
+        }) : buildBody('Retencion', source === 'ARBA' ? 'consultaPadronIIBB' : 'consultaAlicuotaAgip', {
+          sesion: { usuario: user, claveSesion: sessionPassword }, cuit,
+          ...(source === 'ARBA' ? { fecha: arbaDate, idProvincia: '2' } : {})
         }),
         success(response) {
           try {
             // No retornar JSON sin filtrar en caso de excepciones de autenticación.
+            if (source === 'ARBA' && response.responseText.trim() === 'Unable to open file!') {
+              resolve({ kind: 'padron' }); return;
+            }
             const json = ext.decode(response.responseText);
+            const scalar = value => {
+              if (typeof value === 'string') {
+                for (const secret of [sessionPassword, sessionUserId, user, company]) if (typeof secret === 'string' && secret.length >= 4 && value.includes(secret)) return undefined;
+                if (value.length > 4096) throw new Error('Campo inesperadamente largo');
+                return value;
+              }
+              return typeof value === 'number' && Number.isFinite(value) || typeof value === 'boolean' ? value : undefined;
+            };
+            const obj = value => value && typeof value === 'object' && !Array.isArray(value);
+            const d = json?.response?.data;
+            if (source === 'AGIP' && Array.isArray(d) && d.length > 1) { resolve({ kind: 'error', message: 'Respuesta AGIP ambigua.' }); return; }
+            if (source === 'ARCA' && Array.isArray(d?.impuestos) && d.impuestos.length > 1000) { resolve({ kind: 'error', message: 'Lista de impuestos inesperadamente extensa.' }); return; }
+            const pickRates = value => obj(value) ? { retencion: scalar(value.retencion), percepcion: scalar(value.percepcion) } : scalar(value);
+            const data = source === 'AGIP' ? (Array.isArray(d) ? d.map(pickRates) : pickRates(d)) : source === 'ARBA' ? pickRates(d) : obj(d) ? {
+              nombre: scalar(d.nombre), idCondicionIva: scalar(d.idCondicionIva), pais: scalar(d.pais),
+              tipoPersona: scalar(d.tipoPersona), mesCierre: scalar(d.mesCierre), idActividad: scalar(d.idActividad), descActividad: scalar(d.descActividad),
+              impuestos: Array.isArray(d.impuestos) ? d.impuestos.filter(x => (typeof x === 'string' || typeof x === 'number') && /^\d+$/.test(String(x))) : undefined,
+              condicionIva: { label: scalar(d.condicionIva?.label) },
+              domicilioFiscal: { direccion: scalar(d.domicilioFiscal?.direccion), localidad: scalar(d.domicilioFiscal?.localidad), codPostal: scalar(d.domicilioFiscal?.codPostal), provincia: scalar(d.domicilioFiscal?.provincia) }
+            } : null;
+            // Solo campos permitidos; nunca retorna el cuerpo HTTP ni datos de sesión.
+            const cleanMessage = value => {
+              if (typeof value !== 'string') return undefined;
+              for (const secret of [sessionPassword, sessionUserId, user, company]) if (typeof secret === 'string' && secret.length >= 4 && value.includes(secret)) return 'Colppy informó un error.';
+              return value.slice(0, 512);
+            };
             resolve({ kind: 'response', data: {
-              result: { estado: json?.result?.estado, mensaje: json?.result?.mensaje },
+              result: obj(json?.result) ? { estado: scalar(json.result.estado), mensaje: cleanMessage(json.result.mensaje) } : undefined,
               response: {
-                success: json?.response?.success,
-                message: json?.response?.message,
-                mensaje: json?.response?.mensaje,
-                data: {
-                  nombre: json?.response?.data?.nombre,
-                  idCondicionIva: json?.response?.data?.idCondicionIva,
-                  pais: json?.response?.data?.pais,
-                  domicilioFiscal: {
-                    direccion: json?.response?.data?.domicilioFiscal?.direccion,
-                    localidad: json?.response?.data?.domicilioFiscal?.localidad,
-                    codPostal: json?.response?.data?.domicilioFiscal?.codPostal,
-                    provincia: json?.response?.data?.domicilioFiscal?.provincia
-                  }
-                }
+                success: scalar(json?.response?.success),
+                message: cleanMessage(json?.response?.message),
+                mensaje: cleanMessage(json?.response?.mensaje),
+                data
               }
             } });
           } catch {
@@ -159,7 +184,7 @@ export function pageQueryCuit(cuit) {
           if (status === 401 || status === 403) {
             resolve({ kind: 'session', message: 'Colppy rechazó la sesión; iniciá sesión nuevamente.' });
           } else {
-            resolve({ kind: 'http', status, message: status ? `HTTP ${status}` : 'Sin respuesta / timeout' });
+            resolve({ kind: 'http', status, message: status > 0 ? `HTTP ${status}` : 'Sin respuesta / timeout' });
           }
         }
       });

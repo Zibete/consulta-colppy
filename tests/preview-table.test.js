@@ -130,8 +130,8 @@ test('V-09: estructura, sticky header, scroll doble, límite cinco filas y sin a
   assert.match(css, /\.preview-scroll\s*\{[^}]*max-height:204px;[^}]*overflow:auto;/);
   assert.match(css, /\.preview-scroll th\s*\{[^}]*position:sticky;top:0;/);
   assert.match(js, /const includeHeaders = elements\.headers\.checked;/);
-  assert.match(js, /toTsv\(rows, includeHeaders\)/);
-  assert.match(js, /toCsv\(rows\)/);
+  assert.match(js, /toTsv\(rows, includeHeaders, outputColumns\(\)\)/);
+  assert.match(js, /toCsv\(rows, outputColumns\(\)\)/);
 });
 test('V-10: colapsar no conserva filas visibles ni realiza consultas adicionales', async () => {
   const f = fixture(async (start, limit) => ({ rows: dataRows(start, limit), total: 10 }));
@@ -146,4 +146,35 @@ test('V-10: colapsar no conserva filas visibles ni realiza consultas adicionales
   f.scroller.fire('scroll');
   await tick();
   assert.equal(f.calls.length, initial);
+});
+
+
+test('V-11: la tabla cambia encabezados y celdas según columnas seleccionadas sin pedir datos fiscales', async () => {
+  const f=fixture(); const columns=['CUIT','AGIP Retención (%)','AGIP Estado'];
+  f.preview.update(status(),columns); f.disclosure.open=true;f.disclosure.fire('toggle');await tick();
+  const head=f.table.children.find(x=>x.tagName==='thead');assert.deepEqual(head.children[0].children.map(x=>x.textContent),columns);
+  assert.equal(f.tbody.children.filter(x=>x.className!=='preview-spacer')[0].children.length,3);
+  f.preview.update(status(),COLUMNS);await tick();assert.equal(head.children[0].children.length,10);
+});
+
+test('V-12: scroll no reemplaza datos por placeholders ni cambia leyenda o posición', async () => {
+  let release;
+  const f=fixture(async (start,limit)=>{
+    if(start>0) await new Promise(resolve=>{release=resolve;});
+    return {rows:dataRows(start,limit),total:1000};
+  });
+  f.preview.update(status('j',1000));f.disclosure.open=true;f.disclosure.fire('toggle');await tick();
+  const old=f.tbody.children; const oldNote=f.note.textContent;
+  f.scroller.scrollLeft=900;f.scroller.scrollTop=400*PREVIEW_ROW_HEIGHT;f.scroller.fire('scroll');await tick();
+  assert.equal(f.tbody.children,old);assert.equal(f.note.textContent,oldNote);
+  const replace=f.tbody.replaceChildren.bind(f.tbody);
+  f.tbody.replaceChildren=(...nodes)=>{replace(...nodes);f.scroller.scrollLeft=0;f.scroller.scrollTop=0;};
+  release();await tick();assert.equal(f.scroller.scrollLeft,900);assert.equal(f.scroller.scrollTop,400*PREVIEW_ROW_HEIGHT);
+  assert.equal(f.note.textContent,oldNote);
+  const count=f.calls.length;f.scroller.scrollLeft=1000;f.scroller.fire('scroll');await tick();assert.equal(f.calls.length,count);
+});
+test('V-13: ancho explícito y estable aun con columnas largas', () => {
+  const f=fixture();f.preview.update(status(),['CUIT','Descripción de impuestos']);
+  assert.equal(f.table.style.width,'375px');
+  assert.equal(f.table.children[0].children[1].style.width,'260px');
 });

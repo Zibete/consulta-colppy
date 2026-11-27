@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Consulta fiscal · Colppy</title>
+  <title>Consulta Colppy</title>
   <link rel="stylesheet" href="panel.css">
 </head>
 <body>
   <header class="masthead">
-    <div class="brand-icon" aria-hidden="true">C</div>
+    <img class="brand-icon" src="icon.svg" alt="" width="40" height="40">
     <div class="brand-text">
-      <div class="eyebrow">HERRAMIENTAS FINANCE</div>
-      <h1>Consulta fiscal</h1>
-      <div class="subhead">Colppy · ARCA</div>
+      <div class="eyebrow">FINANCE TOOLKIT</div>
+      <h1>Consulta Colppy</h1>
+      <div class="subhead">ARCA · ARBA · AGIP</div>
     </div>
-    <span class="version">v1.1.2</span>
+    <span class="version">v2.0.0</span>
   </header>
 
   <main>
@@ -24,6 +24,14 @@
       <label class="sr-only" for="cuit-input">Listado de CUIT</label>
       <textarea id="cuit-input" rows="5" spellcheck="false" placeholder="Pegá los CUIT acá…" aria-describedby="input-count"></textarea>
       <div class="inline-meta"><span id="input-count">0 CUIT detectados</span><span id="input-warning"></span></div>
+      <fieldset class="source-fieldset"><legend id="source-legend">Consultas</legend>
+        <div class="source-grid">
+          <label class="source-option"><span><input id="source-arca" type="checkbox" checked> ARCA</span><small>Datos fiscales</small></label>
+          <label class="source-option"><span><input id="source-arba" type="checkbox"> ARBA</span><small>Alícuotas IIBB</small></label>
+          <label class="source-option"><span><input id="source-agip" type="checkbox"> AGIP</span><small>Alícuotas IIBB</small></label>
+        </div>
+        <label class="date-option" id="arba-date-group" hidden for="arba-date">Fecha ARBA <input id="arba-date" type="date"></label>
+      </fieldset>
       <button id="start" class="btn btn-primary" type="button">Consultar CUIT</button>
     </section>
 
@@ -33,6 +41,7 @@
       <progress id="progress" max="100" value="0" aria-label="Progreso de consultas"></progress>
       <div class="stats">
         <div class="stat"><span class="stat-label">Correctos</span><strong id="count-ok">0</strong></div>
+        <div class="stat"><span class="stat-label">Parciales</span><strong id="count-partial">0</strong></div>
         <div class="stat"><span class="stat-label">Sin datos</span><strong id="count-empty">0</strong></div>
         <div class="stat"><span class="stat-label">Inválidos</span><strong id="count-invalid">0</strong></div>
         <div class="stat"><span class="stat-label">Errores</span><strong id="count-errors">0</strong></div>
@@ -47,16 +56,17 @@
 
     <section class="step" aria-labelledby="step-output">
       <div class="step-heading"><span class="step-number">3</span><h2 id="step-output">Resultados</h2></div>
-      <p class="hint">Se mantienen las 10 columnas, el orden original y los CUIT repetidos.</p>
+      <p class="hint" id="columns-hint">10 columnas · Se conserva el orden original y los CUIT repetidos.</p>
       <details id="results-preview" class="results-preview" hidden>
-        <summary>Visualizar resultados <span class="preview-columns">10 columnas</span></summary>
+        <summary>Visualizar resultados <span class="preview-columns" id="preview-columns">10 columnas</span></summary>
         <div id="preview-scroll" class="preview-scroll" role="region" aria-label="Resultados de la consulta fiscal" tabindex="0">
-          <table id="preview-table" aria-label="Resultados fiscales: 10 columnas">
+          <table id="preview-table" aria-label="Resultados">
             <tbody id="preview-body"></tbody>
           </table>
         </div>
         <p id="preview-note" class="preview-note" role="status" aria-live="polite"></p>
       </details>
+      <label class="output-option" id="extended-group" for="extended"><input id="extended" type="checkbox"> Incluir información adicional de ARCA</label>
       <label class="output-option" for="include-headers"><input id="include-headers" type="checkbox"> Incluir encabezados al copiar a Excel</label>
       <div class="actions output-actions">
         <button id="copy" class="btn btn-secondary" type="button" disabled>Copiar Excel</button>

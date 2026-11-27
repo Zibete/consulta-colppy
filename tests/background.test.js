@@ -9,6 +9,10 @@ let createdTabs = 0;
 let tabUpdates = [];
 let preflightReady = true;
 let queryResponses = [];
+let sourceCalls = [];
+let pendingRequest = null;
+let failCheckpoint = false;
+let holdStateRead = false, resumeStateRead = null;
 let tab = { id: 77, active: true, discarded: false, url: 'https://login.colppy.com/contabilidad' };
 let onUpdated, onActivated;
 const listeners = { addListener: () => {} };
@@ -45,8 +49,13 @@ const chromeMock = {
       if (func.name === 'pageAssistLogin') { loginAssists += 1; return [{ result: { monitoring: true } }]; }
       if (func.name === 'pageCancelLoginAssist') return [{ result: null }];
       calls += 1;
+      const source = args[1] ?? 'ARCA';
+      sourceCalls.push([source, args[0], args[2]]);
       const kind = queryResponses.shift() || 'ok';
       if (kind === 'session') return [{ result: { kind: 'session', message: 'Sesión vencida' } }];
+      if (kind === 'hold') await new Promise(resolve => { pendingRequest = resolve; });
+      if (kind === 'error') return [{result:{kind:'http',status:500,message:'HTTP 500'}}];
+      if (source !== 'ARCA') { const rates = kind === 'partial' ? {percepcion:'0.80'} : {retencion:'0.00',percepcion:'0.80'}; return [{result:{kind:'response',data:{...(source==='ARBA'?{result:{estado:0}}:{}),response:{success:true,data:source==='ARBA'?rates:[rates]}}}}]; }
       return [{ result: {
         kind: 'response', data: {
           result: { estado: 0 }, response: { success: true, data: {
@@ -61,13 +70,19 @@ const chromeMock = {
     session: {
       async get(keys) {
         if (keys === null) return Object.fromEntries(mem.entries());
-        if (typeof keys === 'string') return { [keys]: mem.get(keys) };
+        if (typeof keys === 'string') {
+          const captured = mem.get(keys);
+          if (keys === 'colppy:state' && holdStateRead && captured?.phase === 'running') {
+            holdStateRead = false; await new Promise(resolve => { resumeStateRead = resolve; });
+          }
+          return { [keys]: captured };
+        }
         if (Array.isArray(keys)) return Object.fromEntries(keys.filter((k) => mem.has(k)).map((k) => [k, mem.get(k)]));
         const obj = {};
         for (const [key, defaultValue] of Object.entries(keys)) obj[key] = mem.has(key) ? mem.get(key) : defaultValue;
         return obj;
       },
-      async set(values) { for (const [key, value] of Object.entries(values)) mem.set(key, value); },
+      async set(values) { if (failCheckpoint && Object.keys(values).some(k=>k.startsWith("colppy:result:"))) throw new Error("Quota exceeded"); for (const [key, value] of Object.entries(values)) mem.set(key, value); },
       async remove(keys) { for (const key of keys) mem.delete(key); }
     }
   }
@@ -102,6 +117,7 @@ async function reset() {
   tabUpdates = [];
   preflightReady = true;
   queryResponses = [];
+  sourceCalls = []; pendingRequest = null; failCheckpoint = false; holdStateRead = false; resumeStateRead = null;
 }
 
 test('B-01: procesa una vez CUIT duplicado y preserva tres filas', async () => {
@@ -244,4 +260,80 @@ test('B-09: sesión vencida navega al login sin activar la pestaña', async () =
   assert.equal(tab.active, false);
   assert.ok(tabUpdates.some(opts => opts.url === 'https://login.colppy.com/'));
   assert.ok(tabUpdates.every(opts => !('active' in opts)));
+});
+
+
+test('B-10: fuentes seleccionadas, deduplicación, fecha congelada y error aislado', async () => {
+  await reset(); const cuit=makeValid('2012345678');
+  queryResponses=['ok','ok','error'];
+  await send('START',{input:`${cuit}|${cuit}|123`,sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  const state=(await send('GET_STATUS')).data;
+  assert.equal(state.next,2); assert.equal(state.stats.errors,1); assert.equal(state.stats.invalid,1);
+  assert.deepEqual(sourceCalls.map(x=>x[0]),['ARCA','ARBA','AGIP']); assert.equal(sourceCalls[1][2],'2020-01-15');
+  const {rows}=(await send('GET_ROWS',{start:0,limit:5})).data;
+  assert.deepEqual(rows[0],rows[1]); assert.equal(rows[0].Estado,'Error'); assert.equal(rows[0]['ARBA Retención (%)'],'0,00');
+  assert.equal(rows[0]['AGIP Estado'],'Error HTTP'); assert.equal(rows[2]['AGIP Estado'],'No consultado');
+});
+test('B-11: pausa durante solicitud guarda el par terminado y retoma solo lo pendiente', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['ok','hold','ok'];
+  await send('START',{input:cuit,sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'});
+  await waitUntil(()=>pendingRequest!==null);
+  const pause=await send('PAUSE'); assert.equal(pause.data.pauseRequested,true);
+  pendingRequest(); await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='paused');
+  const p=(await send('GET_STATUS')).data; assert.equal(p.next,0); assert.equal(p.sourceIndex,2); assert.equal(p.completedQueries,2);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:1})).data;
+  assert.equal(rows[0]['ARBA Estado'],'OK'); assert.equal(rows[0]['AGIP Estado'],'Pendiente');
+  await send('RESUME'); await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  assert.deepEqual(sourceCalls.map(x=>x[0]),['ARCA','ARBA','AGIP']);
+});
+test('B-12: vencimiento de sesión entre organismos conserva ARCA y reintenta solo ARBA', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['ok','session','ok','ok'];
+  await send('START',{input:cuit,sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='waiting_login');
+  const state=(await send('GET_STATUS')).data; assert.equal(state.sourceIndex,1);
+  onUpdated(tab.id,{status:'complete'});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  assert.deepEqual(sourceCalls.map(x=>x[0]),['ARCA','ARBA','ARBA','AGIP']);
+  assert.ok(sourceCalls.filter(x=>x[0]==='ARBA').every(x=>x[2]==='2020-01-15'));
+});
+test('B-13: falta de espacio no avanza cursor ni declara éxito', async () => {
+  await reset(); const cuit=makeValid('2012345678'); failCheckpoint=true;
+  await send('START',{input:cuit,sources:['ARCA']});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='paused');
+  const state=(await send('GET_STATUS')).data; assert.equal(state.next,0); assert.equal(state.completedQueries,0);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:1})).data; assert.equal(rows[0].Estado,'Pendiente');
+  failCheckpoint=false; await send('RESUME'); await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+});
+
+test('B-14: resultado parcial cuenta una vez por CUIT y coincide con las filas', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['ok','partial','ok'];
+  await send('START',{input:`${cuit}|${cuit}`,sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  const state=(await send('GET_STATUS')).data;
+  assert.equal(state.stats.partial,1); assert.equal(state.stats.ok,0); assert.equal(state.stats.errors,0);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:2})).data;
+  assert.deepEqual(rows.map(r=>r.Estado),['Parcial','Parcial']);
+  assert.equal(rows[0]['ARBA Percepción (%)'],'0,80'); assert.equal(calls,3);
+});
+test('B-15: pausa antes de reservar la solicitud no envía el par', async () => {
+  await reset(); const cuit=makeValid('2012345678'); holdStateRead=true;
+  await send('START',{input:cuit});
+  await waitUntil(()=>resumeStateRead!==null);
+  const paused=await send('PAUSE'); assert.equal(paused.data.phase,'paused');
+  resumeStateRead(); await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(calls,0); await send('RESUME');
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete'); assert.equal(calls,1);
+});
+
+test('B-16: Error HTTP de ARCA sola conserva el estado histórico y cuenta un error por CUIT', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['error'];
+  await send('START',{input:`${cuit}|${cuit}`});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  const state=(await send('GET_STATUS')).data;
+  assert.equal(state.stats.errors,1); assert.equal(state.stats.ok,0);
+  assert.equal(state.stats.partial,0); assert.equal(state.stats.noData,0);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:2})).data;
+  assert.deepEqual(rows.map(r=>r.Estado),['Error HTTP','Error HTTP']);
+  assert.deepEqual(rows.map(r=>r.Error),['HTTP 500','HTTP 500']); assert.equal(calls,1);
 });

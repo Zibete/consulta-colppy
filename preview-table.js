@@ -6,6 +6,7 @@ export const PREVIEW_HEADER_HEIGHT = 34;
 export const PREVIEW_VISIBLE_ROWS = 5;
 const OVERSCAN = 3;
 const WIDTHS = [115, 115, 245, 180, 245, 165, 90, 180, 120, 260];
+const columnWidth = name => WIDTHS[COLUMNS.indexOf(name)] ?? (name === 'Descripción de impuestos' ? 260 : 180);
 
 /** La tabla reserva espacio para todas las filas, pero recupera solo la ventana visible. */
 export function previewWindow(scrollTop, total, viewportHeight = PREVIEW_HEADER_HEIGHT + PREVIEW_VISIBLE_ROWS * PREVIEW_ROW_HEIGHT) {
@@ -21,26 +22,34 @@ export function previewWindow(scrollTop, total, viewportHeight = PREVIEW_HEADER_
 /** Todos los valores se agregan como textContent, nunca innerHTML. */
 export function createPreviewTable({ disclosure, scroller, table, tbody, note, fetchRows, document: doc }) {
   const colgroup = doc.createElement('colgroup');
-  for (const width of WIDTHS) {
-    const col = doc.createElement('col');
-    col.style.width = `${width}px`;
-    colgroup.append(col);
-  }
   const thead = doc.createElement('thead');
   const heading = doc.createElement('tr');
-  for (const name of COLUMNS) {
-    const th = doc.createElement('th');
-    th.scope = 'col';
-    th.textContent = name;
-    heading.append(th);
-  }
   thead.append(heading);
   table.prepend(colgroup, thead);
+  let columns = COLUMNS;
+  function setColumns(next = COLUMNS) {
+    columns = next;
+    table.style.width = `${columns.reduce((sum, name) => sum + columnWidth(name), 0)}px`;
+    const cols = columns.map(name => {
+      const col = doc.createElement('col');
+      col.style.width = `${columnWidth(name)}px`;
+      return col;
+    });
+    colgroup.replaceChildren(...cols);
+    const heads = columns.map(name => {
+      const th = doc.createElement('th');
+      th.scope = 'col'; th.textContent = name; return th;
+    });
+    heading.replaceChildren(...heads);
+    table.setAttribute('aria-label', `Resultados: ${columns.length} columnas`);
+  }
+  setColumns();
 
   let state = null;
   let generation = 0;
   let rendered = '';
-  const available = (value) => Boolean(value && ['paused', 'complete'].includes(value.phase) && value.inputCount > 0 && value.next > 0);
+  let hasPainted = false;
+  const available = (value) => Boolean(value && ['paused', 'complete'].includes(value.phase) && value.inputCount > 0 && (value.next > 0 || value.completedQueries > 0));
 
   function spacer(height) {
     if (height <= 0) return null;
@@ -48,7 +57,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     tr.className = 'preview-spacer';
     tr.setAttribute('aria-hidden', 'true');
     const td = doc.createElement('td');
-    td.colSpan = COLUMNS.length;
+    td.colSpan = columns.length;
     td.style.height = `${height}px`;
     tr.append(td);
     return tr;
@@ -61,7 +70,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     for (let index = range.start; index < range.end; index++) {
       const row = rows?.[index - range.start];
       const tr = doc.createElement('tr');
-      for (const field of COLUMNS) {
+      for (const field of columns) {
         const td = doc.createElement('td');
         if (row) {
           const value = safeCell(row[field]);
@@ -77,30 +86,38 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     }
     const after = spacer(range.bottomHeight);
     if (after) children.push(after);
+    const top = scroller.scrollTop, left = scroller.scrollLeft;
     tbody.replaceChildren(...children);
+    if (scroller.scrollTop !== top) scroller.scrollTop = top;
+    if (scroller.scrollLeft !== left) scroller.scrollLeft = left;
+    hasPainted = true;
   }
 
   async function refresh(force = false) {
     if (!disclosure.open || !available(state)) return;
     const range = previewWindow(scroller.scrollTop, state.inputCount, scroller.clientHeight);
-    const key = `${state.id}:${state.next}:${range.start}:${range.end}`;
+    const key = `${state.id}:${state.next}:${state.completedQueries ?? 0}:${range.start}:${range.end}`;
     if (!force && key === rendered) return;
     rendered = key;
     const token = ++generation;
     const id = state.id;
     const nextAtRequest = state.next;
-    paint(range, null);
-    note.textContent = 'Cargando resultados…';
+    // Mantener la geometría y las filas existentes durante lecturas sucesivas.
+    if (!hasPainted) {
+      paint(range, null);
+      note.textContent = 'Cargando resultados…';
+    }
     try {
       const response = await fetchRows(range.start, range.end - range.start);
       if (token !== generation || !disclosure.open || state?.id !== id || !available(state)) return;
       // No representar filas de una consulta reemplazada mientras se recuperaban datos.
       if (state.next !== nextAtRequest) return;
-      if (response.total !== state.inputCount || response.rows.length !== range.end - range.start) {
+      if ((response.jobId != null && response.jobId !== id) || response.total !== state.inputCount || response.rows.length !== range.end - range.start) {
         throw new Error('La cantidad de filas cambió durante la lectura.');
       }
       paint(range, response.rows);
-      note.textContent = `${state.inputCount.toLocaleString('es-AR')} filas · desplazate para consultar las demás columnas y registros.`;
+      const label = `${state.inputCount.toLocaleString('es-AR')} filas · desplazate para consultar las demás columnas y registros.`;
+      if (note.textContent !== label) note.textContent = label;
     } catch (error) {
       if (token !== generation) return;
       rendered = '';
@@ -115,13 +132,16 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
       generation++;
       rendered = '';
       tbody.replaceChildren();
+      hasPainted = false;
       note.textContent = '';
     }
   });
   scroller.addEventListener('scroll', () => { if (disclosure.open) void refresh(); });
 
   return {
-    update(next) {
+    update(next, nextColumns = COLUMNS) {
+      const changedColumns = nextColumns.join("|") !== columns.join("|");
+      if (changedColumns) { setColumns(nextColumns); generation++; rendered = ''; hasPainted = false; }
       const prev = state;
       state = next;
       const canShow = available(next);
@@ -131,10 +151,11 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
         rendered = '';
         disclosure.open = false;
         tbody.replaceChildren();
+        hasPainted = false;
         scroller.scrollTop = 0;
         scroller.scrollLeft = 0;
         note.textContent = '';
-      } else if (disclosure.open && (prev?.next !== next?.next || prev?.phase !== next?.phase)) {
+      } else if (disclosure.open && (changedColumns || prev?.next !== next?.next || prev?.completedQueries !== next?.completedQueries || prev?.phase !== next?.phase)) {
         void refresh(true);
       }
     }
