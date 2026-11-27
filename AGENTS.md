@@ -33,7 +33,7 @@
 ## Contrato v2.0
 - ARCA seleccionado por defecto; ARBA y AGIP opcionales. Fecha ARBA congelada al iniciar, por defecto fecha actual de Argentina; no enviar fechas futuras.
 - Checkpoint atómico por CUIT + organismo. Pausa cooperativa; si una solicitud termina mientras se pausa, preservar su resultado. Nunca repetir un resultado confirmado al reanudar.
-- Conservar alícuota cero y cualquier alícuota individual válida; distinguir resultado parcial, ausencia, padrón no disponible, error y pendiente. Estado y contadores comparten el agregado por CUIT único; el formato provincial usa coma decimal con al menos dos decimales, sin redondear. Las fechas se muestran en hora argentina; ISO interno. No inferir vigencia ni inscripción activa.
+- Conservar alícuota cero y cualquier alícuota individual válida; distinguir resultado parcial, ausencia, padrón no disponible, error y pendiente. Estado y contadores comparten el agregado por CUIT único (ARCA sola conserva el estado detallado histórico, incluido Error HTTP, contabilizado en Errores); el formato provincial usa coma decimal con al menos dos decimales, sin redondear. Las fechas se muestran en hora argentina; ISO interno. No inferir vigencia ni inscripción activa.
 - Filtrar campos en MAIN world; excluir DNI, respuestas completas y credenciales. No incorporar FCE ni hosts nuevos.
 - Fecha de consulta no equivale a fecha de actualización del dato. No prometer tiempo real; documentar la procedencia y sus límites fuera de la UI.
 - QA offline con datos ficticios; validación real independiente y autorización de uso antes de distribuir.

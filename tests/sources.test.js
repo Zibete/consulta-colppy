@@ -121,3 +121,20 @@ test('S-11: Estado general es el mismo agregado que usan los contadores', () => 
     assert.equal(aggregate(record,opts.sources),expected); assert.equal(projectRow(cuit,record,opts).Estado,expected);
   }
 });
+
+test('S-12: ARCA sola conserva Error HTTP en tabla y exportaciones estándar y ampliada', () => {
+  const arca = normalizeSource('ARCA',cuit,{kind:'http',status:500,message:'HTTP 500'},at);
+  const record = {results:{ARCA:arca}}, opts = {sources:['ARCA']};
+  const row = projectRow(cuit,record,opts);
+  assert.equal(aggregate(record,opts.sources),'Error HTTP');
+  assert.equal(row.Estado,'Error HTTP'); assert.equal(row.Error,'HTTP 500');
+  for (const extended of [false,true]) {
+    const cols = columnsFor(opts.sources,extended);
+    assert.equal(toTsv([row],false,cols).split('\t')[1],'Error HTTP');
+    assert.match(toCsv([row],cols),/Error HTTP/);
+  }
+  const arba = normalizeSource('ARBA',cuit,answer({retencion:'0',percepcion:'0.80'}),at);
+  const mixed = {results:{ARCA:arca,ARBA:arba}}, mixedOpts = {sources:['ARCA','ARBA'],arbaDate:'2020-01-15'};
+  assert.equal(aggregate(mixed,mixedOpts.sources),'Error');
+  assert.equal(projectRow(cuit,mixed,mixedOpts).Estado,'Error');
+});

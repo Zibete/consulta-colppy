@@ -94,6 +94,8 @@ export function normalizeSource(source, cuit, answer, date = new Date().toISOStr
 export function aggregate(record, sources) {
   if (record?.invalid) return 'CUIT inválido';
   const statuses = sources.map(s => record?.results?.[s]?.status ?? 'Pendiente');
+  // ARCA sola conserva el estado histórico; los contadores agrupan los fallos en Errores.
+  if (sources.length === 1 && sources[0] === 'ARCA') return statuses[0];
   if (statuses.includes('Pendiente')) return 'Pendiente';
   if (statuses.some(x => !['OK','Sin datos','Parcial'].includes(x))) return 'Error';
   if (statuses.every(x => x === 'Sin datos')) return 'Sin datos';

@@ -10,3 +10,4 @@
 - Mismos permisos, sin nuevos hosts, y pruebas offline de regresión.
 
 - Ajustes de QA: scroll estable, alícuotas parciales, estados conciliados, fechas locales, mensajes de error y preferencias de sesión.
+- Cierre de QA: compatibilidad de Error HTTP en ARCA sola y grilla de contadores adaptable a cinco dígitos.

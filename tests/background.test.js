@@ -325,3 +325,15 @@ test('B-15: pausa antes de reservar la solicitud no envía el par', async () => 
   assert.equal(calls,0); await send('RESUME');
   await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete'); assert.equal(calls,1);
 });
+
+test('B-16: Error HTTP de ARCA sola conserva el estado histórico y cuenta un error por CUIT', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['error'];
+  await send('START',{input:`${cuit}|${cuit}`});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  const state=(await send('GET_STATUS')).data;
+  assert.equal(state.stats.errors,1); assert.equal(state.stats.ok,0);
+  assert.equal(state.stats.partial,0); assert.equal(state.stats.noData,0);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:2})).data;
+  assert.deepEqual(rows.map(r=>r.Estado),['Error HTTP','Error HTTP']);
+  assert.deepEqual(rows.map(r=>r.Error),['HTTP 500','HTTP 500']); assert.equal(calls,1);
+});
