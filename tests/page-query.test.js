@@ -175,3 +175,10 @@ test('Q-14: filtro ARCA permite campos extendidos pero excluye DNI y mensajes co
   const restore=installMock(o=>o.success({responseText:JSON.stringify({result:{estado:0},response:{success:true,message:'TEST_SESSION_ONLY',data:{nombre:'Empresa ficticia',tipoPersona:'JURIDICA',impuestos:[30,11],numeroDocumento:'NO_EXFILTRAR',descActividad:'Actividad ficticia'}}})}));
   try{const a=await pageQueryCuit('20123456780');assert.deepEqual(a.data.response.data.impuestos,[30,11]);assert.equal(a.data.response.data.tipoPersona,'JURIDICA');assert.equal(JSON.stringify(a).includes('NO_EXFILTRAR'),false);assert.equal(JSON.stringify(a).includes('TEST_SESSION_ONLY'),false);}finally{restore();}
 });
+
+test('Q-15: ExtJS timeout -1 y ausencia de red 0 tienen mensaje legible', async () => {
+  for(const status of [-1,0]) {
+    const restore=installMock(o=>o.failure({status}));
+    try {const r=await pageQueryCuit('20123456780');assert.equal(r.kind,'http');assert.equal(r.message,'Sin respuesta / timeout');} finally {restore();}
+  }
+});

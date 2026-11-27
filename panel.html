@@ -24,7 +24,7 @@
       <label class="sr-only" for="cuit-input">Listado de CUIT</label>
       <textarea id="cuit-input" rows="5" spellcheck="false" placeholder="Pegá los CUIT acá…" aria-describedby="input-count"></textarea>
       <div class="inline-meta"><span id="input-count">0 CUIT detectados</span><span id="input-warning"></span></div>
-      <fieldset class="source-fieldset"><legend>Consultas</legend>
+      <fieldset class="source-fieldset"><legend id="source-legend">Consultas</legend>
         <div class="source-grid">
           <label class="source-option"><span><input id="source-arca" type="checkbox" checked> ARCA</span><small>Datos fiscales</small></label>
           <label class="source-option"><span><input id="source-arba" type="checkbox"> ARBA</span><small>Alícuotas IIBB</small></label>
@@ -41,6 +41,7 @@
       <progress id="progress" max="100" value="0" aria-label="Progreso de consultas"></progress>
       <div class="stats">
         <div class="stat"><span class="stat-label">Correctos</span><strong id="count-ok">0</strong></div>
+        <div class="stat"><span class="stat-label">Parciales</span><strong id="count-partial">0</strong></div>
         <div class="stat"><span class="stat-label">Sin datos</span><strong id="count-empty">0</strong></div>
         <div class="stat"><span class="stat-label">Inválidos</span><strong id="count-invalid">0</strong></div>
         <div class="stat"><span class="stat-label">Errores</span><strong id="count-errors">0</strong></div>

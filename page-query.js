@@ -184,7 +184,7 @@ export function pageQueryCuit(cuit, source = 'ARCA', arbaDate = null) {
           if (status === 401 || status === 403) {
             resolve({ kind: 'session', message: 'Colppy rechazó la sesión; iniciá sesión nuevamente.' });
           } else {
-            resolve({ kind: 'http', status, message: status ? `HTTP ${status}` : 'Sin respuesta / timeout' });
+            resolve({ kind: 'http', status, message: status > 0 ? `HTTP ${status}` : 'Sin respuesta / timeout' });
           }
         }
       });

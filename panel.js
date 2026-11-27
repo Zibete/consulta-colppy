@@ -7,12 +7,27 @@ const elements = {
   input: $('cuit-input'), inputCount: $('input-count'), inputWarning: $('input-warning'),
   start: $('start'), pause: $('pause'), resume: $('resume'), discard: $('discard'),
   copy: $('copy'), headers: $('include-headers'), csv: $('csv'), status: $('job-status'), progressLabel: $('job-progress'),
-  progress: $('progress'), ok: $('count-ok'), empty: $('count-empty'),
+  progress: $('progress'), ok: $('count-ok'), partial: $('count-partial'), empty: $('count-empty'),
   invalid: $('count-invalid'), errors: $('count-errors'),
   note: $('job-note'), outputNote: $('output-note')
 };
 let job = null;
 let busy = false;
+const PREF_KEY = 'colppy:preferences';
+let preferencesRevision = 0;
+function savePreferences() {
+  preferencesRevision++;
+  return chrome.storage.session.set({ [PREF_KEY]: { extended: extended.checked, headers: elements.headers.checked } }).catch(message);
+}
+async function restorePreferences() {
+  const revision = preferencesRevision;
+  const prefs = (await chrome.storage.session.get(PREF_KEY))[PREF_KEY];
+  if (revision !== preferencesRevision || !prefs) return;
+  extended.checked = prefs.extended === true;
+  elements.headers.checked = prefs.headers === true;
+  refreshChoices();
+}
+function setText(element, value) { if (element.textContent !== value) element.textContent = value; }
 const sourceInputs = Object.fromEntries(SOURCES.map(s => [s, $(`source-${s.toLowerCase()}`)]));
 const dateInput = $('arba-date');
 const extended = $('extended');
@@ -29,9 +44,11 @@ function refreshChoices() {
   const hasArca = (job?.sources ?? sources).includes('ARCA');
   $('extended-group').hidden = !hasArca;
   extended.disabled = !hasArca || busy;
+  elements.headers.disabled = busy;
   const columns = outputColumns();
-  $('columns-hint').textContent = `${columns.length} columnas · Se conserva el orden original y los CUIT repetidos.`;
-  $('preview-columns').textContent = `${columns.length} columnas`;
+  setText($('source-legend'), job?.phase === 'complete' ? 'Consultas para el próximo lote' : 'Consultas');
+  setText($('columns-hint'), `${job?.phase === 'complete' ? 'Último lote · ' : ''}${columns.length} columnas · Se conserva el orden original y los CUIT repetidos.`);
+  setText($('preview-columns'), `${columns.length} columnas`);
   preview.update(job, columns);
 }
 const preview = createPreviewTable({
@@ -54,7 +71,7 @@ function refreshInputCount() {
   const unique = new Set(tokens).size;
   elements.inputCount.textContent = `${tokens.length.toLocaleString('es-AR')} CUIT · ${unique.toLocaleString('es-AR')} únicos`;
   elements.inputWarning.textContent = tokens.length > MAX_CUITS ? 'Supera el máximo' :
-    invalid ? `${invalid} inválidos` : '';
+    invalid ? `${invalid} ${invalid === 1 ? 'inválido' : 'inválidos'}` : '';
   elements.start.disabled = busy || ['running', 'waiting_login', 'paused'].includes(job?.phase) || !tokens.length || tokens.length > MAX_CUITS || !selectedSources().length || (sourceInputs.ARBA.checked && !validDate(dateInput.value));
 }
 function render(next) {
@@ -73,6 +90,7 @@ function render(next) {
     `${next.next.toLocaleString('es-AR')} / ${next.uniqueCount.toLocaleString('es-AR')} únicos${phase === 'running' && next.sources?.length > 1 ? ` · ${next.sources[next.sourceIndex ?? 0]}` : ''}` : '0 / 0 únicos';
   elements.progress.value = next?.uniqueCount ? (next.next * 100 / next.uniqueCount) : 0;
   elements.ok.textContent = next?.stats?.ok ?? 0;
+  elements.partial.textContent = next?.stats?.partial ?? 0;
   elements.empty.textContent = next?.stats?.noData ?? 0;
   elements.invalid.textContent = next?.stats?.invalid ?? 0;
   elements.errors.textContent = next?.stats?.errors ?? 0;
@@ -84,11 +102,11 @@ function render(next) {
   elements.copy.disabled = busy || !outputReady;
   elements.csv.disabled = busy || !outputReady;
   elements.input.disabled = ['running', 'paused', 'waiting_login'].includes(phase);
-  elements.outputNote.textContent = !next ? 'Cuando haya resultados, podrás exportarlos incluso si pausás el proceso.' :
+  setText(elements.outputNote, !next ? 'Cuando haya resultados, podrás exportarlos incluso si pausás el proceso.' :
     phase === 'waiting_login' ? 'Los CUIT se conservarán mientras iniciás sesión en Colppy.' :
     phase === 'running' ? 'Pausá para exportar un resultado parcial o esperá al final.' :
     phase === 'paused' ? 'La exportación parcial incluye las filas pendientes identificadas como tales.' :
-    `${next.inputCount.toLocaleString('es-AR')} filas de salida · ${next.stats.fixedFields} campos reparados por codificación.`;
+    `${next.inputCount.toLocaleString('es-AR')} filas de salida · ${next.stats.fixedFields} campos reparados por codificación.`);
   refreshInputCount();
 }
 async function withBusy(action) {
@@ -117,7 +135,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
 elements.input.addEventListener('input', refreshInputCount);
 for (const input of Object.values(sourceInputs)) input.addEventListener('change', () => { refreshChoices(); refreshInputCount(); });
 dateInput.addEventListener('change', refreshInputCount);
-extended.addEventListener('change', refreshChoices);
+extended.addEventListener('change', () => { refreshChoices(); void savePreferences(); });
+elements.headers.addEventListener('change', () => { void savePreferences(); });
 elements.start.addEventListener('click', () => withBusy(async () => {
   render(await command('START', { input: elements.input.value, sources: selectedSources(), arbaDate: dateInput.value }));
 }));
@@ -160,7 +179,7 @@ elements.csv.addEventListener('click', () => withBusy(async () => {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `consulta-colppy-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `consulta-colppy-${argentinaDate()}.csv`;
   document.body.append(a);
   a.click();
   a.remove();
@@ -170,6 +189,7 @@ elements.csv.addEventListener('click', () => withBusy(async () => {
 
 // Rehidrata el texto al volver a abrir el panel mientras el trabajo está en sesión.
 async function restorePanel() {
+  await restorePreferences().catch(message);
   const state = await command('GET_STATUS');
   render(state);
   if (state && !elements.input.value) {

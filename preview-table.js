@@ -6,6 +6,7 @@ export const PREVIEW_HEADER_HEIGHT = 34;
 export const PREVIEW_VISIBLE_ROWS = 5;
 const OVERSCAN = 3;
 const WIDTHS = [115, 115, 245, 180, 245, 165, 90, 180, 120, 260];
+const columnWidth = name => WIDTHS[COLUMNS.indexOf(name)] ?? (name === 'Descripción de impuestos' ? 260 : 180);
 
 /** La tabla reserva espacio para todas las filas, pero recupera solo la ventana visible. */
 export function previewWindow(scrollTop, total, viewportHeight = PREVIEW_HEADER_HEIGHT + PREVIEW_VISIBLE_ROWS * PREVIEW_ROW_HEIGHT) {
@@ -28,9 +29,10 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
   let columns = COLUMNS;
   function setColumns(next = COLUMNS) {
     columns = next;
+    table.style.width = `${columns.reduce((sum, name) => sum + columnWidth(name), 0)}px`;
     const cols = columns.map(name => {
       const col = doc.createElement('col');
-      col.style.width = `${WIDTHS[COLUMNS.indexOf(name)] ?? 180}px`;
+      col.style.width = `${columnWidth(name)}px`;
       return col;
     });
     colgroup.replaceChildren(...cols);
@@ -46,6 +48,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
   let state = null;
   let generation = 0;
   let rendered = '';
+  let hasPainted = false;
   const available = (value) => Boolean(value && ['paused', 'complete'].includes(value.phase) && value.inputCount > 0 && (value.next > 0 || value.completedQueries > 0));
 
   function spacer(height) {
@@ -83,7 +86,11 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     }
     const after = spacer(range.bottomHeight);
     if (after) children.push(after);
+    const top = scroller.scrollTop, left = scroller.scrollLeft;
     tbody.replaceChildren(...children);
+    if (scroller.scrollTop !== top) scroller.scrollTop = top;
+    if (scroller.scrollLeft !== left) scroller.scrollLeft = left;
+    hasPainted = true;
   }
 
   async function refresh(force = false) {
@@ -95,8 +102,11 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
     const token = ++generation;
     const id = state.id;
     const nextAtRequest = state.next;
-    paint(range, null);
-    note.textContent = 'Cargando resultados…';
+    // Mantener la geometría y las filas existentes durante lecturas sucesivas.
+    if (!hasPainted) {
+      paint(range, null);
+      note.textContent = 'Cargando resultados…';
+    }
     try {
       const response = await fetchRows(range.start, range.end - range.start);
       if (token !== generation || !disclosure.open || state?.id !== id || !available(state)) return;
@@ -106,7 +116,8 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
         throw new Error('La cantidad de filas cambió durante la lectura.');
       }
       paint(range, response.rows);
-      note.textContent = `${state.inputCount.toLocaleString('es-AR')} filas · desplazate para consultar las demás columnas y registros.`;
+      const label = `${state.inputCount.toLocaleString('es-AR')} filas · desplazate para consultar las demás columnas y registros.`;
+      if (note.textContent !== label) note.textContent = label;
     } catch (error) {
       if (token !== generation) return;
       rendered = '';
@@ -121,6 +132,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
       generation++;
       rendered = '';
       tbody.replaceChildren();
+      hasPainted = false;
       note.textContent = '';
     }
   });
@@ -129,7 +141,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
   return {
     update(next, nextColumns = COLUMNS) {
       const changedColumns = nextColumns.join("|") !== columns.join("|");
-      if (changedColumns) { setColumns(nextColumns); generation++; rendered = ""; }
+      if (changedColumns) { setColumns(nextColumns); generation++; rendered = ''; hasPainted = false; }
       const prev = state;
       state = next;
       const canShow = available(next);
@@ -139,6 +151,7 @@ export function createPreviewTable({ disclosure, scroller, table, tbody, note, f
         rendered = '';
         disclosure.open = false;
         tbody.replaceChildren();
+        hasPainted = false;
         scroller.scrollTop = 0;
         scroller.scrollLeft = 0;
         note.textContent = '';

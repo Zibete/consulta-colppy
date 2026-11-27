@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { argentinaDate, validDate, selection, columnsFor, normalizeSource, aggregate, projectRow } from '../sources.js';
+import { argentinaDate, validDate, selection, columnsFor, normalizeSource, aggregate, projectRow, formatRate, formatQueryDate } from '../sources.js';
 import { COLUMNS, toTsv, toCsv } from '../core.js';
 import { describeTax } from '../tax-catalog.js';
 const cuit = '20123456780';
@@ -36,7 +36,7 @@ test('S-04: errores, ausencia y padrón no disponible son distintos', () => {
   assert.equal(normalizeSource('ARBA',cuit,{kind:'padron'}).status,'Padrón no disponible');
   assert.equal(normalizeSource('ARBA',cuit,{kind:'http',message:'HTTP 500'}).status,'Error HTTP');
   assert.equal(normalizeSource('ARBA',cuit,answer({retencion:'0',percepcion:'0'},{estado:1})).status,'Error');
-  assert.equal(normalizeSource('AGIP',cuit,answer([{retencion:'0'}])).status,'Error');
+  assert.equal(normalizeSource('AGIP',cuit,answer([{retencion:'0'}])).status,'Parcial');
   assert.equal(normalizeSource('ARCA',cuit,answer({})).status,'Error');
   assert.equal(normalizeSource('ARCA',cuit,answer(null)).status,'Error');
 });
@@ -48,8 +48,8 @@ test('S-05: impuestos desconocidos, extensión opcional, fecha y resultados parc
   const row=projectRow(cuit,record,options);
   assert.equal(aggregate(record,options.sources),'Pendiente');
   assert.equal(row['ARCA Estado'],undefined);
-  assert.equal(row.Estado,'OK'); assert.equal(row['AGIP Estado'],'Pendiente');
-  assert.equal(row['ARBA Fecha solicitada'],'2020-01-15'); assert.equal(row['ARBA Fecha consulta'],at);
+  assert.equal(row.Estado,'Pendiente'); assert.equal(row['AGIP Estado'],'Pendiente');
+  assert.equal(row['ARBA Fecha solicitada'],'15/01/2020'); assert.equal(row['ARBA Fecha consulta'],'15/01/2026 09:00:00');
   assert.equal(row['Códigos de impuestos'],'30, 999999'); assert.match(row['Descripción de impuestos'],/IVA.*999999/);
   assert.equal(JSON.stringify(row).includes('NO MOSTRAR'),false);
   assert.equal(describeTax(11),'Ganancias personas físicas');
@@ -64,7 +64,7 @@ test('S-06: resultado mixto no pierde datos confirmados y marca error por fuente
   const record={results:{ARBA:a,AGIP:g}}, opts={sources:['ARBA','AGIP'],arbaDate:'2020-01-15'};
   const row=projectRow(cuit,record,opts);
   assert.equal(aggregate(record,opts.sources),'Error'); assert.equal(row.Estado,'Error');
-  assert.equal(row['ARBA Retención (%)'],'0'); assert.equal(row['AGIP Retención (%)'],'');
+  assert.equal(row['ARBA Retención (%)'],'0,00'); assert.equal(row['AGIP Retención (%)'],'');
   assert.equal(row['AGIP Estado'],'Error HTTP'); assert.match(row.Error,/AGIP/);
   const invalid=projectRow(cuit,{invalid:true},opts);assert.equal(invalid['ARBA Estado'],'No consultado');
 });
@@ -82,4 +82,42 @@ test('S-07: 10000 filas ficticias con tres fuentes y exportación sin pérdida',
   assert.equal(toTsv(rows,true,cols).split('\r\n').length,10001);
   const estimatedBytes = (Buffer.byteLength(JSON.stringify(record))+64)*10000+300000;
   assert.ok(estimatedBytes<10*1024*1024, `Fixture excede la cuota estimada: ${estimatedBytes}`);
+});
+
+test('S-08: conserva cada alícuota válida, incluso cero, ante otra ausente o inválida', () => {
+  const a=normalizeSource('ARBA',cuit,answer({percepcion:' 0.80 '}),at);
+  const g=normalizeSource('AGIP',cuit,answer([{retencion:0,percepcion:'invalid'}]),at);
+  assert.equal(a.status,'Parcial'); assert.match(a.error,/Retención: sin dato/);
+  assert.equal(a.data.percepcion,'0.80');
+  assert.equal(g.status,'Parcial'); assert.match(g.error,/Percepción: valor inválido/);
+  assert.equal(g.data.retencion,'0');
+  const row=projectRow(cuit,{results:{ARBA:a,AGIP:g}},{sources:['ARBA','AGIP'],arbaDate:'2020-01-15'});
+  assert.equal(row.Estado,'Parcial'); assert.equal(row['ARBA Retención (%)'],'');
+  assert.equal(row['ARBA Percepción (%)'],'0,80'); assert.equal(row['AGIP Retención (%)'],'0,00');
+  assert.equal(row['AGIP Percepción (%)'],'');
+  assert.equal(normalizeSource('ARBA',cuit,answer({retencion:' ',percepcion:null})).status,'Sin datos');
+  assert.equal(normalizeSource('ARBA',cuit,answer({retencion:'X',percepcion:'Y'})).status,'Error');
+});
+test('S-09: ausencia con mensaje de éxito no implica CUIT fuera de padrón', () => {
+  for(const data of [null, [], {retencion:null,percepcion:null}]) {
+    const r=answer(data); r.data.response.message='Operacion realizada con exito';
+    const g=normalizeSource('AGIP',cuit,r,at);
+    assert.equal(g.status,'Sin datos'); assert.doesNotMatch(g.error,/exito|no encontrado/i); assert.match(g.error,/no devolvió/);
+  }
+  const r=answer(null,{estado:0},false); r.data.response.message='El CUIT no se encuentra en el Padron';
+  assert.equal(normalizeSource('ARBA',cuit,r).error,r.data.response.message);
+});
+test('S-10: fechas argentinas cruzan medianoche UTC y tasas respetan precisión', () => {
+  assert.equal(formatQueryDate('2026-11-28T01:01:02.345Z'),'27/11/2026 22:01:02');
+  assert.equal(formatQueryDate('2026-11-28T03:00:00Z'),'28/11/2026 00:00:00');
+  assert.equal(formatQueryDate('invalid'),'');
+  for(const [input,expected] of [[' 2 ','2,00'],['0.00','0,00'],['1,5','1,50'],['0.1250','0,125'],[null,''],['-1','']]) assert.equal(formatRate(input),expected);
+});
+test('S-11: Estado general es el mismo agregado que usan los contadores', () => {
+  const opts={sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'};
+  const result=status=>({status,data:{},error:''});
+  for(const [statuses,expected] of [[['OK','OK','OK'],'OK'],[['OK','Sin datos','OK'],'Parcial'],[['Sin datos','Sin datos','Sin datos'],'Sin datos'],[['OK','Error','OK'],'Error'],[['OK','Parcial','OK'],'Parcial'],[['OK','Error',null],'Pendiente']]) {
+    const record={results:Object.fromEntries(opts.sources.flatMap((s,i)=>statuses[i] ? [[s,result(statuses[i])]] : []))};
+    assert.equal(aggregate(record,opts.sources),expected); assert.equal(projectRow(cuit,record,opts).Estado,expected);
+  }
 });

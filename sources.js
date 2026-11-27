@@ -32,14 +32,38 @@ const good = x => [true, 1, 'true'].includes(x);
 const bad = x => [false, 0, 'false'].includes(x);
 const obj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const scalar = x => typeof x === 'string' || typeof x === 'number' ? repairMojibake(String(x)) : '';
-const rate = x => typeof x === 'string' && /^\d+(?:[.,]\d+)?$/.test(x.trim()) ? x : typeof x === 'number' && Number.isFinite(x) && x >= 0 ? String(x) : null;
+const rate = x => {
+  const value = typeof x === 'string' ? x.trim() : typeof x === 'number' && Number.isFinite(x) && x >= 0 ? String(x) : '';
+  return /^\d+(?:[.,]\d+)?$/.test(value) ? value.replace(',', '.') : null;
+};
+const missingRate = x => x == null || (typeof x === 'string' && !x.trim());
+// No redondear una alícuota informada con mayor precisión. Separador decimal de Excel es-AR.
+export function formatRate(value) {
+  const normalized = rate(value);
+  if (normalized === null) return '';
+  const [integer, fraction = ''] = normalized.split('.');
+  return `${integer.replace(/^0+(?=\d)/, '')},${fraction.replace(/0+$/, '').padEnd(2, '0')}`;
+}
+const dateTimeFormat = new Intl.DateTimeFormat('es-AR', {
+  timeZone: 'America/Argentina/Buenos_Aires', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hourCycle:'h23'
+});
+export function formatQueryDate(value) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (!Number.isFinite(d.getTime())) return '';
+  const parts = Object.fromEntries(dateTimeFormat.formatToParts(d).map(({type,value})=>[type,value]));
+  return `${parts.day}/${parts.month}/${parts.year} ${parts.hour}:${parts.minute}:${parts.second}`;
+}
+const formatRequestedDate = value => /^\d{4}-\d{2}-\d{2}$/.test(value ?? '') ? value.split('-').reverse().join('/') : '';
+const meaningfulMessage = value => /^(?:operaci[oó]n realizada con [eé]xito|[eé]xito|ok|success)[.!\s]*$/iu.test(value.trim()) ? '' : value;
+
 export function normalizeSource(source, cuit, answer, date = new Date().toISOString()) {
   const finish = (status, error = '', data = {}) => ({ status, error, date, data });
   if (answer?.kind === 'padron') return finish('Padrón no disponible', 'Colppy no pudo abrir el padrón.');
   if (answer?.kind === 'http') return finish('Error HTTP', answer.message || 'Error HTTP');
   if (answer?.kind !== 'response') return finish('Error', answer?.message || 'Respuesta no reconocida de Colppy.');
   const json = answer.data, result = json?.result, response = json?.response;
-  const message = scalar(response?.message || response?.mensaje || result?.mensaje);
+  const message = [response?.message, response?.mensaje, result?.mensaje].map(scalar).map(meaningfulMessage).find(Boolean) || '';
   if (!obj(response) || (!good(response.success) && !bad(response.success))) return finish('Error', 'Estructura inesperada de Colppy.');
   if (source === 'ARCA') {
     // Preservar el contrato histórico de respuesta negativa, pero no declarar OK ante data ausente.
@@ -58,15 +82,22 @@ export function normalizeSource(source, cuit, answer, date = new Date().toISOStr
   const d = source === 'AGIP' && Array.isArray(payload) && payload.length === 1 ? payload[0] : source === 'ARBA' ? payload : null;
   if (!obj(d)) return finish('Error', 'Estructura de alícuotas inesperada.');
   const retencion = rate(d.retencion), percepcion = rate(d.percepcion);
-  if (retencion === null || percepcion === null) return finish('Error', 'Respuesta de alícuotas incompleta o inválida.');
-  return finish('OK', '', { retencion, percepcion });
+  if (retencion !== null && percepcion !== null) return finish('OK', '', { retencion, percepcion });
+  const details = [['Retención', d.retencion, retencion], ['Percepción', d.percepcion, percepcion]]
+    .filter(([, , parsed]) => parsed === null)
+    .map(([label, raw]) => `${label}: ${missingRate(raw) ? 'sin dato' : 'valor inválido'}`).join('; ');
+  if (retencion !== null || percepcion !== null) return finish('Parcial', details, { retencion, percepcion });
+  return missingRate(d.retencion) && missingRate(d.percepcion)
+    ? finish('Sin datos', message || 'Colppy no devolvió alícuotas.')
+    : finish('Error', details);
 }
 export function aggregate(record, sources) {
   if (record?.invalid) return 'CUIT inválido';
   const statuses = sources.map(s => record?.results?.[s]?.status ?? 'Pendiente');
   if (statuses.includes('Pendiente')) return 'Pendiente';
-  if (statuses.some(x => !['OK','Sin datos'].includes(x))) return 'Error';
-  if (statuses.includes('Sin datos')) return 'Sin datos';
+  if (statuses.some(x => !['OK','Sin datos','Parcial'].includes(x))) return 'Error';
+  if (statuses.every(x => x === 'Sin datos')) return 'Sin datos';
+  if (statuses.some(x => x !== 'OK')) return 'Parcial';
   return 'OK';
 }
 export function projectRow(cuit, record, options) {
@@ -74,7 +105,7 @@ export function projectRow(cuit, record, options) {
   const results = record?.results ?? {};
   const arca = results.ARCA;
   const row = arca?.data?.row ? {...arca.data.row} : emptyRow(cuit);
-  row.Estado = record?.invalid ? 'CUIT inválido' : sources.includes('ARCA') ? (arca?.status ?? 'Pendiente') : aggregate(record, sources);
+  row.Estado = aggregate(record, sources);
   const errors = sources.flatMap(s => results[s]?.error ? [sources.length === 1 ? results[s].error : `${s}: ${results[s].error}`] : []);
   if (record?.invalid) row.Error = 'Debe tener 11 dígitos y dígito verificador válido.';
   else row.Error = errors.join(' | ') || (row.Estado === 'Pendiente' ? 'No procesado todavía.' : '');
@@ -84,11 +115,11 @@ export function projectRow(cuit, record, options) {
   for (const s of ['ARBA','AGIP']) {
     if (!sources.includes(s)) continue;
     const r = results[s];
-    row[`${s} Retención (%)`] = r?.data?.retencion ?? '';
-    row[`${s} Percepción (%)`] = r?.data?.percepcion ?? '';
+    row[`${s} Retención (%)`] = formatRate(r?.data?.retencion);
+    row[`${s} Percepción (%)`] = formatRate(r?.data?.percepcion);
     row[`${s} Estado`] = record?.invalid ? 'No consultado' : r?.status ?? 'Pendiente';
-    row[`${s} Fecha consulta`] = r?.date ?? '';
-    if (s === 'ARBA') row['ARBA Fecha solicitada'] = options.arbaDate;
+    row[`${s} Fecha consulta`] = formatQueryDate(r?.date);
+    if (s === 'ARBA') row['ARBA Fecha solicitada'] = formatRequestedDate(options.arbaDate);
   }
   return row;
 }

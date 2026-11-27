@@ -155,7 +155,7 @@ async function startJob(message) {
   const state = {
     id: jobId, tabId: null, phase: 'waiting_login', startedAt: now, updatedAt: now,
     inputCount: items.length, uniqueCount: unique.length, next: 0, sourceIndex: 0, completedQueries: 0, ...options,
-    stats: { ok: 0, noData: 0, invalid: 0, errors: 0, fixedFields: 0 },
+    stats: { ok: 0, partial: 0, noData: 0, invalid: 0, errors: 0, fixedFields: 0 },
     consecutiveErrors: 0, authPrompts: 0,
     note: 'Abriendo Colppy. Si es necesario, iniciá sesión; la consulta continuará automáticamente.'
   };
@@ -244,12 +244,17 @@ async function runQueue() {
         await pauseWithNote(state, 'La pestaña de Colppy se cerró, se descargó o cambió de dirección. Presioná Reanudar.');
         return;
       }
-      const ready = await getState();
-      if (ready?.id !== state.id || ready.phase !== 'running' || ready.pauseRequested || ready.next !== index || (ready.sourceIndex ?? 0) !== sourceIndex) return;
+      // Reservar el par bajo el mismo bloqueo que PAUSE evita perder una respuesta
+      // si la pausa llega entre la validación del estado y el envío.
+      const reserved = await serialized(async () => {
+        const ready = await getState();
+        if (ready?.id !== state.id || ready.phase !== 'running' || ready.pauseRequested || ready.next !== index || (ready.sourceIndex ?? 0) !== sourceIndex) return false;
+        requestInProgress = true;
+        return true;
+      });
+      if (!reserved) return;
       let result;
       const invalid = !isValidCuit(cuit);
-      // Se mantiene hasta que el resultado y el cursor se confirmen juntos.
-      requestInProgress = true;
       try {
         if (!invalid) {
           let response;
@@ -275,12 +280,13 @@ async function runQueue() {
           if (done) {
             const status = aggregate(record, sources);
             if (status === 'OK') stats.ok++;
+            else if (status === 'Parcial') stats.partial = (stats.partial ?? 0) + 1;
             else if (status === 'Sin datos') stats.noData++;
             else if (status === 'CUIT inválido') stats.invalid++;
             else stats.errors++;
           }
           stats.fixedFields += result?.repaired ?? 0;
-          const consecutiveErrors = result && !['OK', 'Sin datos'].includes(result.status) ? (latest.consecutiveErrors || 0) + 1 : 0;
+          const consecutiveErrors = result && !['OK', 'Sin datos', 'Parcial'].includes(result.status) ? (latest.consecutiveErrors || 0) + 1 : 0;
           const paused = latest.pauseRequested || consecutiveErrors >= 5;
           const next = { ...latest, next: done ? index + 1 : index, sourceIndex: done ? 0 : sourceIndex + 1,
             completedQueries: (latest.completedQueries ?? 0) + (invalid ? 0 : 1), updatedAt: Date.now(), stats, consecutiveErrors,

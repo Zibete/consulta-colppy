@@ -23,7 +23,7 @@ Las tres operaciones fueron probadas de forma individual durante la investigaci�
 
 ## Normalización y errores
 
-Cada fuente conserva sus datos, estado y fecha de consulta. OK requiere datos de estructura válida. Cero explícito es válido. Sin datos identifica ausencia de respuesta útil; texto conocido de archivo no disponible, error HTTP, estructura no esperada y pendiente se distinguen. No se convierten errores en cero ni se aplica automáticamente ninguna regla tributaria. El estado de cada fuente se confirma de forma atómica con el checkpoint. Respuestas 429/503 y rechazo de sesión interrumpen la cola para evitar nuevas solicitudes. Los resultados confirmados no se repiten.
+Cada fuente conserva sus datos, estado y fecha de consulta. OK requiere datos de estructura válida. En ARBA/AGIP, si solo una alícuota es válida se conserva y el estado es Parcial. Cero explícito es válido. Una respuesta exitosa sin datos útiles no demuestra que el CUIT esté ausente del padrón. Sin datos identifica ausencia de respuesta útil; texto conocido de archivo no disponible, error HTTP, estructura no esperada y pendiente se distinguen. No se convierten errores en cero ni se aplica automáticamente ninguna regla tributaria. El estado de cada fuente se confirma de forma atómica con el checkpoint. Respuestas 429/503 y rechazo de sesión interrumpen la cola para evitar nuevas solicitudes. Los resultados confirmados no se repiten.
 
 ## Catálogo de impuestos
 

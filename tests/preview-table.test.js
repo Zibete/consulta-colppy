@@ -156,3 +156,25 @@ test('V-11: la tabla cambia encabezados y celdas según columnas seleccionadas s
   assert.equal(f.tbody.children.filter(x=>x.className!=='preview-spacer')[0].children.length,3);
   f.preview.update(status(),COLUMNS);await tick();assert.equal(head.children[0].children.length,10);
 });
+
+test('V-12: scroll no reemplaza datos por placeholders ni cambia leyenda o posición', async () => {
+  let release;
+  const f=fixture(async (start,limit)=>{
+    if(start>0) await new Promise(resolve=>{release=resolve;});
+    return {rows:dataRows(start,limit),total:1000};
+  });
+  f.preview.update(status('j',1000));f.disclosure.open=true;f.disclosure.fire('toggle');await tick();
+  const old=f.tbody.children; const oldNote=f.note.textContent;
+  f.scroller.scrollLeft=900;f.scroller.scrollTop=400*PREVIEW_ROW_HEIGHT;f.scroller.fire('scroll');await tick();
+  assert.equal(f.tbody.children,old);assert.equal(f.note.textContent,oldNote);
+  const replace=f.tbody.replaceChildren.bind(f.tbody);
+  f.tbody.replaceChildren=(...nodes)=>{replace(...nodes);f.scroller.scrollLeft=0;f.scroller.scrollTop=0;};
+  release();await tick();assert.equal(f.scroller.scrollLeft,900);assert.equal(f.scroller.scrollTop,400*PREVIEW_ROW_HEIGHT);
+  assert.equal(f.note.textContent,oldNote);
+  const count=f.calls.length;f.scroller.scrollLeft=1000;f.scroller.fire('scroll');await tick();assert.equal(f.calls.length,count);
+});
+test('V-13: ancho explícito y estable aun con columnas largas', () => {
+  const f=fixture();f.preview.update(status(),['CUIT','Descripción de impuestos']);
+  assert.equal(f.table.style.width,'375px');
+  assert.equal(f.table.children[0].children[1].style.width,'260px');
+});

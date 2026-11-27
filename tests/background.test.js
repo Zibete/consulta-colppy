@@ -12,6 +12,7 @@ let queryResponses = [];
 let sourceCalls = [];
 let pendingRequest = null;
 let failCheckpoint = false;
+let holdStateRead = false, resumeStateRead = null;
 let tab = { id: 77, active: true, discarded: false, url: 'https://login.colppy.com/contabilidad' };
 let onUpdated, onActivated;
 const listeners = { addListener: () => {} };
@@ -54,7 +55,7 @@ const chromeMock = {
       if (kind === 'session') return [{ result: { kind: 'session', message: 'Sesión vencida' } }];
       if (kind === 'hold') await new Promise(resolve => { pendingRequest = resolve; });
       if (kind === 'error') return [{result:{kind:'http',status:500,message:'HTTP 500'}}];
-      if (source !== 'ARCA') { const rates = {retencion:'0.00',percepcion:'0.80'}; return [{result:{kind:'response',data:{...(source==='ARBA'?{result:{estado:0}}:{}),response:{success:true,data:source==='ARBA'?rates:[rates]}}}}]; }
+      if (source !== 'ARCA') { const rates = kind === 'partial' ? {percepcion:'0.80'} : {retencion:'0.00',percepcion:'0.80'}; return [{result:{kind:'response',data:{...(source==='ARBA'?{result:{estado:0}}:{}),response:{success:true,data:source==='ARBA'?rates:[rates]}}}}]; }
       return [{ result: {
         kind: 'response', data: {
           result: { estado: 0 }, response: { success: true, data: {
@@ -69,7 +70,13 @@ const chromeMock = {
     session: {
       async get(keys) {
         if (keys === null) return Object.fromEntries(mem.entries());
-        if (typeof keys === 'string') return { [keys]: mem.get(keys) };
+        if (typeof keys === 'string') {
+          const captured = mem.get(keys);
+          if (keys === 'colppy:state' && holdStateRead && captured?.phase === 'running') {
+            holdStateRead = false; await new Promise(resolve => { resumeStateRead = resolve; });
+          }
+          return { [keys]: captured };
+        }
         if (Array.isArray(keys)) return Object.fromEntries(keys.filter((k) => mem.has(k)).map((k) => [k, mem.get(k)]));
         const obj = {};
         for (const [key, defaultValue] of Object.entries(keys)) obj[key] = mem.has(key) ? mem.get(key) : defaultValue;
@@ -110,7 +117,7 @@ async function reset() {
   tabUpdates = [];
   preflightReady = true;
   queryResponses = [];
-  sourceCalls = []; pendingRequest = null; failCheckpoint = false;
+  sourceCalls = []; pendingRequest = null; failCheckpoint = false; holdStateRead = false; resumeStateRead = null;
 }
 
 test('B-01: procesa una vez CUIT duplicado y preserva tres filas', async () => {
@@ -265,7 +272,7 @@ test('B-10: fuentes seleccionadas, deduplicación, fecha congelada y error aisla
   assert.equal(state.next,2); assert.equal(state.stats.errors,1); assert.equal(state.stats.invalid,1);
   assert.deepEqual(sourceCalls.map(x=>x[0]),['ARCA','ARBA','AGIP']); assert.equal(sourceCalls[1][2],'2020-01-15');
   const {rows}=(await send('GET_ROWS',{start:0,limit:5})).data;
-  assert.deepEqual(rows[0],rows[1]); assert.equal(rows[0].Estado,'OK'); assert.equal(rows[0]['ARBA Retención (%)'],'0.00');
+  assert.deepEqual(rows[0],rows[1]); assert.equal(rows[0].Estado,'Error'); assert.equal(rows[0]['ARBA Retención (%)'],'0,00');
   assert.equal(rows[0]['AGIP Estado'],'Error HTTP'); assert.equal(rows[2]['AGIP Estado'],'No consultado');
 });
 test('B-11: pausa durante solicitud guarda el par terminado y retoma solo lo pendiente', async () => {
@@ -297,4 +304,24 @@ test('B-13: falta de espacio no avanza cursor ni declara éxito', async () => {
   const state=(await send('GET_STATUS')).data; assert.equal(state.next,0); assert.equal(state.completedQueries,0);
   const {rows}=(await send('GET_ROWS',{start:0,limit:1})).data; assert.equal(rows[0].Estado,'Pendiente');
   failCheckpoint=false; await send('RESUME'); await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+});
+
+test('B-14: resultado parcial cuenta una vez por CUIT y coincide con las filas', async () => {
+  await reset(); const cuit=makeValid('2012345678'); queryResponses=['ok','partial','ok'];
+  await send('START',{input:`${cuit}|${cuit}`,sources:['ARCA','ARBA','AGIP'],arbaDate:'2020-01-15'});
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete');
+  const state=(await send('GET_STATUS')).data;
+  assert.equal(state.stats.partial,1); assert.equal(state.stats.ok,0); assert.equal(state.stats.errors,0);
+  const {rows}=(await send('GET_ROWS',{start:0,limit:2})).data;
+  assert.deepEqual(rows.map(r=>r.Estado),['Parcial','Parcial']);
+  assert.equal(rows[0]['ARBA Percepción (%)'],'0,80'); assert.equal(calls,3);
+});
+test('B-15: pausa antes de reservar la solicitud no envía el par', async () => {
+  await reset(); const cuit=makeValid('2012345678'); holdStateRead=true;
+  await send('START',{input:cuit});
+  await waitUntil(()=>resumeStateRead!==null);
+  const paused=await send('PAUSE'); assert.equal(paused.data.phase,'paused');
+  resumeStateRead(); await new Promise(resolve=>setTimeout(resolve,30));
+  assert.equal(calls,0); await send('RESUME');
+  await waitUntil(async()=> (await send('GET_STATUS')).data?.phase==='complete'); assert.equal(calls,1);
 });
